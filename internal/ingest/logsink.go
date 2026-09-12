@@ -3,7 +3,7 @@ package ingest
 import (
 	"log/slog"
 
-	yukonpb "github.com/LukeDevOps/yukon-collector/internal/proto/yukon"
+	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 )
 
 // LogSink logs every payload instead of storing it. It is a placeholder

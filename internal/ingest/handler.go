@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	yukonpb "github.com/LukeDevOps/yukon-collector/internal/proto/yukon"
+	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 )
 
 // Sink receives decoded payloads. A real backend implements this to persist

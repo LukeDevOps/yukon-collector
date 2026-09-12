@@ -42,13 +42,16 @@ Both are protobuf over plain HTTP, not gRPC — the agent sends one batch per
 flush interval per instance, so gRPC's multiplexing advantage doesn't apply,
 and plain HTTP avoids shading grpc-java/Netty into every instrumented JVM.
 See the agent's own `CLAUDE.md` ("Transport", "Hit-data recording &
-export") for the full reasoning; `proto/yukon.proto` here is a synced copy
-of the agent's schema.
+export") for the full reasoning; the schema itself lives in the agent
+repo and is published to the Buf Schema Registry as
+[`buf.build/lukedevops-oss/yukon`](https://buf.build/lukedevops-oss/yukon).
 
 ## Architecture
 
-- `internal/proto/yukon` — generated Go bindings for `proto/yukon.proto`
-  (`protoc` + `protoc-gen-go`).
+- `buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go` — Go bindings
+  for the yukon wire schema, generated remotely by the BSR and pulled in
+  as an ordinary Go module dependency. No local `.proto` copy or `protoc`
+  step in this repo.
 - `internal/ingest.Handler` — decodes the two payload types above and hands
   each to a `Sink`. Rejects malformed bodies with `400` before they reach
   the sink; accepts valid ones with `202`.
@@ -92,18 +95,13 @@ go vet ./...
 go test ./...
 ```
 
-`proto/yukon.proto` is a manually synced copy of the agent's schema, not a
-shared package — there's one consumer relationship (this repo tracks the
-agent's schema, not the reverse), so a diff script is enough overhead.
-Check for drift, or pull in a change, with:
+The wire schema is owned by the agent repo and published to the
+[Buf Schema Registry](https://buf.build/lukedevops-oss/yukon). To pick up a
+schema change, bump the Go bindings:
 
 ```
-scripts/sync-proto.sh              # diff only
-scripts/sync-proto.sh --apply      # copy + regenerate Go bindings
+go get buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go@latest
 ```
-
-It assumes the agent repo is checked out at `../yukon`; override with
-`YUKON_AGENT_REPO`.
 
 ## License
 
