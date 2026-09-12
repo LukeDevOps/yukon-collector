@@ -3,6 +3,7 @@
 package ingest
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,11 @@ type Sink interface {
 	AcceptDeltaBatch(batch *yukonpb.DeltaBatch)
 	AcceptManifest(manifest *yukonpb.ProbeManifest)
 }
+
+// maxBodyBytes caps a single request body. Delta batches and manifests
+// are both small payloads. This limit exists to bound memory use from a
+// bad or hostile sender, not to fit any expected payload size.
+const maxBodyBytes = 4 << 20 // 4 MiB
 
 // Handler implements the agent-facing HTTP surface described in the yukon
 // agent's "Transport" design: one POST per flush interval, body is a
@@ -43,6 +49,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
+	if !checkContentType(w, r) {
+		return
+	}
 	body, err := readBody(w, r)
 	if err != nil {
 		return
@@ -58,6 +67,9 @@ func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
+	if !checkContentType(w, r) {
+		return
+	}
 	body, err := readBody(w, r)
 	if err != nil {
 		return
@@ -72,10 +84,24 @@ func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+func checkContentType(w http.ResponseWriter, r *http.Request) bool {
+	if ct := r.Header.Get("Content-Type"); ct != "application/x-protobuf" {
+		http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+		return false
+	}
+	return true
+}
+
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "failed to read body", http.StatusBadRequest)
+		}
 		return nil, err
 	}
 	return body, nil

@@ -85,6 +85,52 @@ func TestHandleDeltaBatch_MalformedBody_RejectedWithoutReachingSink(t *testing.T
 	}
 }
 
+func TestHandleDeltaBatch_WrongContentType_Rejected(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service"}}
+	body, err := proto.Marshal(batch)
+	if err != nil {
+		t.Fatalf("marshal batch: %v", err)
+	}
+
+	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnsupportedMediaType)
+	}
+	if len(sink.deltaBatches) != 0 {
+		t.Fatalf("sink received %d batches, want 0", len(sink.deltaBatches))
+	}
+}
+
+func TestHandleDeltaBatch_BodyTooLarge_Rejected(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	oversized := strings.Repeat("x", maxBodyBytes+1)
+
+	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf", strings.NewReader(oversized))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+	if len(sink.deltaBatches) != 0 {
+		t.Fatalf("sink received %d batches, want 0", len(sink.deltaBatches))
+	}
+}
+
 func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 	sink := &fakeSink{}
 	server := newTestServer(sink)

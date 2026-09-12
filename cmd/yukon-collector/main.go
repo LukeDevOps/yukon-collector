@@ -4,12 +4,20 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
-const defaultAddr = ":4319"
+const (
+	defaultAddr     = ":4319"
+	shutdownTimeout = 10 * time.Second
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -22,9 +30,39 @@ func main() {
 	mux := http.NewServeMux()
 	registerRoutes(mux, logger)
 
-	logger.Info("yukon-collector listening", "addr", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		logger.Error("server stopped", "error", err)
-		os.Exit(1)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		logger.Info("yukon-collector listening", "addr", addr)
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server stopped", "error", err)
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		stop()
+		logger.Info("shutting down")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful shutdown failed", "error", err)
+			os.Exit(1)
+		}
 	}
 }

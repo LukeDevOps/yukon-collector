@@ -74,6 +74,16 @@ Listens on `:4319` by default. Point the yukon agent's
 YUKON_COLLECTOR_ADDR=:4319 go run ./cmd/yukon-collector
 ```
 
+Or as a container:
+
+```
+docker build -t yukon-collector .
+docker run --rm -p 4319:4319 yukon-collector
+```
+
+`GET /healthz` returns `200` once the server is up, for liveness/readiness
+probes.
+
 ## Development
 
 ```
@@ -82,12 +92,18 @@ go vet ./...
 go test ./...
 ```
 
-Regenerating the proto bindings after editing `proto/yukon.proto`:
+`proto/yukon.proto` is a manually synced copy of the agent's schema, not a
+shared package — there's one consumer relationship (this repo tracks the
+agent's schema, not the reverse), so a diff script is enough overhead.
+Check for drift, or pull in a change, with:
 
 ```
-protoc --go_out=. --go_opt=module=github.com/LukeDevOps/yukon-collector \
-  proto/yukon.proto
+scripts/sync-proto.sh              # diff only
+scripts/sync-proto.sh --apply      # copy + regenerate Go bindings
 ```
+
+It assumes the agent repo is checked out at `../yukon`; override with
+`YUKON_AGENT_REPO`.
 
 ## License
 
