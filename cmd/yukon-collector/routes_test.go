@@ -1,0 +1,86 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
+	mux := http.NewServeMux()
+	registerRoutes(mux, nil, "s3cret")
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/yukon/deltas", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Body = http.NoBody
+	req.Header.Set("Content-Type", "application/x-protobuf")
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post without auth: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status without auth = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	req2, err := http.NewRequest(http.MethodPost, server.URL+"/v1/yukon/deltas", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req2.Body = http.NoBody
+	req2.Header.Set("Content-Type", "application/x-protobuf")
+	req2.Header.Set("Authorization", "Bearer s3cret")
+
+	resp2, err := server.Client().Do(req2)
+	if err != nil {
+		t.Fatalf("post with auth: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("status with auth = %d, want %d", resp2.StatusCode, http.StatusAccepted)
+	}
+}
+
+func TestRegisterRoutes_NoAuthToken_IngestUnauthenticated(t *testing.T) {
+	mux := http.NewServeMux()
+	registerRoutes(mux, nil, "")
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/yukon/deltas", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Body = http.NoBody
+	req.Header.Set("Content-Type", "application/x-protobuf")
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+}
+
+func TestRegisterRoutes_Healthz_NeverRequiresAuth(t *testing.T) {
+	mux := http.NewServeMux()
+	registerRoutes(mux, nil, "s3cret")
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}

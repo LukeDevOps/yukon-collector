@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -27,8 +28,14 @@ func main() {
 		addr = defaultAddr
 	}
 
+	authToken, err := resolveAuthToken(os.Getenv("YUKON_COLLECTOR_AUTH_TOKEN"), os.Getenv("YUKON_COLLECTOR_INSECURE_NO_AUTH"))
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
-	registerRoutes(mux, logger)
+	registerRoutes(mux, logger, authToken)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -65,4 +72,20 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// resolveAuthToken decides the token (if any) the ingest routes require.
+// It fails closed: a missing token is an error unless insecureNoAuthRaw
+// explicitly opts out, so forgetting to set the token stops the server
+// at startup instead of running it unauthenticated.
+func resolveAuthToken(token, insecureNoAuthRaw string) (string, error) {
+	if token != "" {
+		return token, nil
+	}
+	insecureNoAuth, _ := strconv.ParseBool(insecureNoAuthRaw)
+	if insecureNoAuth {
+		return "", nil
+	}
+	return "", errors.New("YUKON_COLLECTOR_AUTH_TOKEN not set; refusing to start without auth " +
+		"(set YUKON_COLLECTOR_INSECURE_NO_AUTH=1 to run unauthenticated)")
 }
