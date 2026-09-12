@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package yukon;
+
+option go_package = "github.com/LukeDevOps/yukon-collector/internal/proto/yukon";
+
+// A probe is addressed on the wire as (class_id, probe_index) rather than a
+// flat global ID: class_id is assigned once per (service, version) and
+// carried in ProbeManifest, so delta batches don't repeat fully-qualified
+// class names on every flush.
+enum ProbeKind {
+  PROBE_KIND_UNSPECIFIED = 0;
+  METHOD = 1;
+  BRANCH = 2;
+}
+
+message ResourceAttributes {
+  string service_name = 1;
+  optional string service_version = 2;
+  string service_instance_id = 3;
+  optional string environment = 4;
+}
+
+message ProbeDelta {
+  int32 class_id = 1;
+  int32 probe_index = 2;
+  ProbeKind kind = 3;
+  int64 first_seen_at = 4;
+  int64 hits_since_last_flush = 5;
+}
+
+// Sent frequently (every 30-60s). Delta-only, not a full snapshot, so
+// payload size stays independent of total probe count.
+message DeltaBatch {
+  ResourceAttributes resource = 1;
+  repeated ProbeDelta deltas = 2;
+}
+
+message ProbeLocation {
+  int32 class_id = 1;
+  int32 probe_index = 2;
+  ProbeKind kind = 3;
+  string class_name = 4;
+  string method_name = 5;
+  string method_descriptor = 6;
+  int32 line = 7;
+  // Unset for method-level probes; set for branch-level probes.
+  optional int32 branch_index = 8;
+}
+
+// A class the agent matched but could not instrument (e.g. bytecode
+// ByteBuddy refuses to redefine), so it never gets a class_id or any probes.
+// Reported by name rather than class_id for exactly that reason: it never
+// enters the class_id-assigning path a successfully instrumented class does.
+message SkippedClass {
+  string class_name = 1;
+  string reason = 2;
+  int64 skipped_at = 3;
+}
+
+// Sent once per (service, version), not per flush, so the collector can
+// resolve probe IDs to source locations without the agent repeating this
+// metadata on every delta batch.
+message ProbeManifest {
+  string service_name = 1;
+  optional string service_version = 2;
+  repeated ProbeLocation probes = 3;
+  repeated SkippedClass skipped_classes = 4;
+}
