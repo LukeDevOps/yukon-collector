@@ -219,6 +219,18 @@ Any other failure is logged and the payload dropped, as is a payload that
 arrives while its queue is full. On shutdown, queued payloads get one
 delivery attempt each within the shutdown deadline.
 
+The defaults match the OTLP HTTP exporter's and should rarely need
+changing. Each can be overridden; durations use Go syntax (`30s`, `5m`).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `YUKON_COLLECTOR_FORWARD_SHARDS` | `8` | Independent queue/worker pairs; payloads are sharded by service identity |
+| `YUKON_COLLECTOR_FORWARD_QUEUE_SIZE` | `64` | Queued payloads per shard before new ones are dropped |
+| `YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT` | `10s` | Bound on one delivery attempt |
+| `YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL` | `5s` | First retry wait, grown 1.5x each attempt with jitter |
+| `YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL` | `30s` | Cap on the retry wait |
+| `YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME` | `5m` | Total time to keep retrying one payload before dropping it |
+
 ## Development
 
 ```

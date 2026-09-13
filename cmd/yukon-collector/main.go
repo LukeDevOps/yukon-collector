@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 )
 
@@ -72,11 +73,14 @@ func main() {
 		defer limiter.Stop()
 	}
 
-	forwardURL := os.Getenv("YUKON_COLLECTOR_FORWARD_URL")
-	forwardAuthToken := os.Getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN")
+	forwardCfg, err := resolveForwardConfig(os.Getenv)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
 
 	mux := http.NewServeMux()
-	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardURL, forwardAuthToken)
+	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -188,4 +192,71 @@ func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 	}
 
 	return rate.Limit(rps), burst, nil
+}
+
+// resolveForwardConfig reads the forwarding settings from the environment
+// via getenv. Only YUKON_COLLECTOR_FORWARD_URL decides whether forwarding
+// is on; the rest tune it and fall back to the forward package's defaults
+// when unset. A value that is present but not a positive number or
+// duration is an error.
+func resolveForwardConfig(getenv func(string) string) (forward.Config, error) {
+	cfg := forward.Config{
+		URL:       getenv("YUKON_COLLECTOR_FORWARD_URL"),
+		AuthToken: getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN"),
+	}
+
+	var err error
+	if cfg.Shards, err = positiveIntEnv(getenv, "YUKON_COLLECTOR_FORWARD_SHARDS"); err != nil {
+		return forward.Config{}, err
+	}
+	if cfg.QueueSize, err = positiveIntEnv(getenv, "YUKON_COLLECTOR_FORWARD_QUEUE_SIZE"); err != nil {
+		return forward.Config{}, err
+	}
+	if cfg.RequestTimeout, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT"); err != nil {
+		return forward.Config{}, err
+	}
+	if cfg.RetryInitialInterval, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL"); err != nil {
+		return forward.Config{}, err
+	}
+	if cfg.RetryMaxInterval, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL"); err != nil {
+		return forward.Config{}, err
+	}
+	if cfg.RetryMaxElapsedTime, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME"); err != nil {
+		return forward.Config{}, err
+	}
+	return cfg, nil
+}
+
+// positiveIntEnv returns the named variable as an int greater than zero,
+// or zero when it is unset.
+func positiveIntEnv(getenv func(string) string, name string) (int, error) {
+	raw := getenv(name)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return n, nil
+}
+
+// positiveDurationEnv returns the named variable as a duration greater
+// than zero (Go syntax such as "30s" or "5m"), or zero when it is unset.
+func positiveDurationEnv(getenv func(string) string, name string) (time.Duration, error) {
+	raw := getenv(name)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return d, nil
 }

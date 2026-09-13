@@ -3,8 +3,11 @@ package main
 import (
 	"log/slog"
 	"testing"
+	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/LukeDevOps/yukon-collector/internal/forward"
 )
 
 func TestResolveAuthToken_TokenSet_ReturnsToken(t *testing.T) {
@@ -152,5 +155,63 @@ func TestResolveLogLevel(t *testing.T) {
 func TestResolveLogLevel_Garbage_Errors(t *testing.T) {
 	if _, err := resolveLogLevel("loud"); err == nil {
 		t.Fatal("expected an error for an unknown level, got nil")
+	}
+}
+
+func envFrom(vars map[string]string) func(string) string {
+	return func(name string) string { return vars[name] }
+}
+
+func TestResolveForwardConfig_Unset_LeavesZeroValues(t *testing.T) {
+	cfg, err := resolveForwardConfig(envFrom(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg != (forward.Config{}) {
+		t.Fatalf("config = %+v, want all zero so the forward package applies its defaults", cfg)
+	}
+}
+
+func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
+	cfg, err := resolveForwardConfig(envFrom(map[string]string{
+		"YUKON_COLLECTOR_FORWARD_URL":                    "https://backend.example.com",
+		"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN":             "backend-secret",
+		"YUKON_COLLECTOR_FORWARD_SHARDS":                 "4",
+		"YUKON_COLLECTOR_FORWARD_QUEUE_SIZE":             "128",
+		"YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "15s",
+		"YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "2s",
+		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "1m",
+		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME": "10m",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := forward.Config{
+		URL:                  "https://backend.example.com",
+		AuthToken:            "backend-secret",
+		Shards:               4,
+		QueueSize:            128,
+		RequestTimeout:       15 * time.Second,
+		RetryInitialInterval: 2 * time.Second,
+		RetryMaxInterval:     time.Minute,
+		RetryMaxElapsedTime:  10 * time.Minute,
+	}
+	if cfg != want {
+		t.Fatalf("config = %+v, want %+v", cfg, want)
+	}
+}
+
+func TestResolveForwardConfig_BadValues_Error(t *testing.T) {
+	for name, value := range map[string]string{
+		"YUKON_COLLECTOR_FORWARD_SHARDS":                 "0",
+		"YUKON_COLLECTOR_FORWARD_QUEUE_SIZE":             "-1",
+		"YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "10",
+		"YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "soon",
+		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "0s",
+		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME": "-5m",
+	} {
+		if _, err := resolveForwardConfig(envFrom(map[string]string{name: value})); err == nil {
+			t.Errorf("%s=%q: expected an error, got nil", name, value)
+		}
 	}
 }

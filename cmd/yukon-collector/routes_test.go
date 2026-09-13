@@ -40,7 +40,7 @@ func deltaRequest(t *testing.T, serverURL string) *http.Request {
 // mustRegisterRoutes wires routes for a config the test expects to be valid.
 func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
 	t.Helper()
-	fwd, err := registerRoutes(mux, nil, authToken, limiter, forwardURL, forwardAuthToken)
+	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken})
 	if err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 
 func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, "", nil, "not a url", ""); err == nil {
+	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}); err == nil {
 		t.Fatal("expected an error for an unusable forward URL, got nil")
 	}
 }
