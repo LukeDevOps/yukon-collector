@@ -136,6 +136,12 @@ type ForwardingSink struct {
 	cfg    Config
 	shards []*shard
 
+	// ctx bounds every worker delivery attempt. Shutdown cancels it once
+	// its own deadline passes, so a slow in-flight request cannot outlive
+	// the shutdown budget.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	closed   atomic.Bool
 	stopping chan struct{}
 	wg       sync.WaitGroup
@@ -148,9 +154,12 @@ var _ ingest.Sink = (*ForwardingSink)(nil)
 func NewForwardingSink(cfg Config) *ForwardingSink {
 	cfg = cfg.withDefaults()
 
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &ForwardingSink{
 		cfg:      cfg,
 		shards:   make([]*shard, cfg.Shards),
+		ctx:      ctx,
+		cancel:   cancel,
 		stopping: make(chan struct{}),
 	}
 	for i := range s.shards {
@@ -209,11 +218,16 @@ func shardIndex(key string, numShards int) int {
 func (s *ForwardingSink) runShard(sh *shard) {
 	defer s.wg.Done()
 	for {
+		// Check for shutdown before looking at the queue. A select with
+		// both cases ready picks one at random, which would let the
+		// worker keep pulling items that Shutdown's drain should own.
 		select {
-		case item, ok := <-sh.queue:
-			if !ok {
-				return
-			}
+		case <-s.stopping:
+			return
+		default:
+		}
+		select {
+		case item := <-sh.queue:
 			s.deliver(item)
 		case <-s.stopping:
 			return
@@ -227,7 +241,7 @@ func (s *ForwardingSink) runShard(sh *shard) {
 func (s *ForwardingSink) deliver(item queuedItem) {
 	b := newBackoff(s.cfg.RetryInitialInterval, s.cfg.RetryMaxInterval, s.cfg.RetryMaxElapsedTime)
 	for {
-		retryable, err := s.attempt(context.Background(), item)
+		retryable, err := s.attempt(s.ctx, item)
 		if err == nil {
 			return
 		}
@@ -295,6 +309,11 @@ func isRetryableStatus(code int) bool {
 // one more delivery attempt, bounded by ctx, instead of the full retry
 // sequence. This matches QueueBatch.Shutdown in the OTel Collector: a
 // bounded best-effort drain, not a guarantee every payload is delivered.
+//
+// An attempt already in flight when Shutdown is called is allowed to
+// finish, but only within ctx: once ctx expires the attempt is cancelled,
+// so a hung backend cannot hold up the drain or leak the worker past
+// Shutdown's return.
 func (s *ForwardingSink) Shutdown(ctx context.Context) {
 	s.closed.Store(true)
 	close(s.stopping)
@@ -307,11 +326,14 @@ func (s *ForwardingSink) Shutdown(ctx context.Context) {
 	select {
 	case <-waitDone:
 	case <-ctx.Done():
+		s.cancel()
+		<-waitDone
 	}
 
 	for _, sh := range s.shards {
 		s.drainOnce(ctx, sh)
 	}
+	s.cancel()
 }
 
 // drainOnce empties sh's queue, giving each item exactly one attempt.

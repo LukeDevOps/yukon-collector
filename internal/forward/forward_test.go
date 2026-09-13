@@ -349,3 +349,42 @@ func findKeysInDifferentShards(t *testing.T, numShards int) (string, string) {
 	t.Fatalf("no two candidate keys hash to different shards out of %d shards", numShards)
 	return "", ""
 }
+
+func TestForwardingSink_Shutdown_CancelsInFlightAttemptAtDeadline(t *testing.T) {
+	var cancelled atomic.Bool
+	handlerEntered := make(chan struct{}, 1)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The server only watches for a client disconnect once the body
+		// has been consumed, so read it before waiting on the context.
+		_, _ = io.ReadAll(r.Body)
+		handlerEntered <- struct{}{}
+		select {
+		case <-r.Context().Done():
+			cancelled.Store(true)
+		case <-time.After(5 * time.Second):
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	cfg := testConfig(backend.URL)
+	cfg.RequestTimeout = time.Hour // only the shutdown deadline may end the attempt
+	sink := NewForwardingSink(cfg)
+
+	sink.AcceptManifest(manifestWithService("svc"))
+	select {
+	case <-handlerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("backend never received the in-flight request")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	sink.Shutdown(ctx)
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("Shutdown took %v, want it bounded by the 100ms deadline", took)
+	}
+	waitFor(t, time.Second, cancelled.Load)
+}
