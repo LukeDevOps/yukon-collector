@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 
 	"google.golang.org/protobuf/proto"
@@ -24,6 +25,9 @@ type Sink interface {
 // are both small payloads. This limit exists to bound memory use from a
 // bad or hostile sender, not to fit any expected payload size.
 const maxBodyBytes = 4 << 20 // 4 MiB
+
+// contentType is the only media type the ingest routes accept.
+const contentType = "application/x-protobuf"
 
 // DeltaBatchPath and ManifestPath are the agent-facing ingest routes. A
 // Sink that relays payloads onward (see forward.ForwardingSink) posts to
@@ -58,17 +62,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
-	if !checkContentType(w, r) {
-		return
-	}
-	body, err := readBody(w, r)
-	if err != nil {
-		return
-	}
 	var batch yukonpb.DeltaBatch
-	if err := proto.Unmarshal(body, &batch); err != nil {
-		h.logger.Warn("rejecting malformed delta batch", "error", err)
-		http.Error(w, "malformed delta batch", http.StatusBadRequest)
+	if !h.decode(w, r, &batch, "delta batch") {
 		return
 	}
 	h.sink.AcceptDeltaBatch(&batch)
@@ -76,25 +71,39 @@ func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
-	if !checkContentType(w, r) {
-		return
-	}
-	body, err := readBody(w, r)
-	if err != nil {
-		return
-	}
 	var manifest yukonpb.ProbeManifest
-	if err := proto.Unmarshal(body, &manifest); err != nil {
-		h.logger.Warn("rejecting malformed manifest", "error", err)
-		http.Error(w, "malformed manifest", http.StatusBadRequest)
+	if !h.decode(w, r, &manifest, "manifest") {
 		return
 	}
 	h.sink.AcceptManifest(&manifest)
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// decode reads r's body into msg. It reports false after writing the
+// error response itself: 415 for the wrong media type, 413 for a body
+// over maxBodyBytes, 400 for anything that is not valid protobuf. what
+// names the payload in log lines and error bodies.
+func (h *Handler) decode(w http.ResponseWriter, r *http.Request, msg proto.Message, what string) bool {
+	if !checkContentType(w, r) {
+		return false
+	}
+	body, err := readBody(w, r)
+	if err != nil {
+		return false
+	}
+	if err := proto.Unmarshal(body, msg); err != nil {
+		h.logger.Warn("rejecting malformed "+what, "error", err)
+		http.Error(w, "malformed "+what, http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// checkContentType accepts application/x-protobuf with any parameters,
+// so a client that appends a charset is not turned away.
 func checkContentType(w http.ResponseWriter, r *http.Request) bool {
-	if ct := r.Header.Get("Content-Type"); ct != "application/x-protobuf" {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != contentType {
 		http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
 		return false
 	}

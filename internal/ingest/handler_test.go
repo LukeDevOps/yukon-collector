@@ -225,3 +225,30 @@ func TestHandleManifest_BodyTooLarge_Rejected(t *testing.T) {
 		t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
 	}
 }
+
+func TestHandleDeltaBatch_ContentTypeWithParameters_Accepted(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	batch := &yukonpb.DeltaBatch{
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+	}
+	body, err := proto.Marshal(batch)
+	if err != nil {
+		t.Fatalf("marshal batch: %v", err)
+	}
+
+	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf; charset=utf-8", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d (media type parameters must be ignored)", resp.StatusCode, http.StatusAccepted)
+	}
+	if len(sink.deltaBatches) != 1 {
+		t.Fatalf("sink received %d batches, want 1", len(sink.deltaBatches))
+	}
+}
