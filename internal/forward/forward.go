@@ -142,9 +142,10 @@ type ForwardingSink struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	closed   atomic.Bool
-	stopping chan struct{}
-	wg       sync.WaitGroup
+	closed       atomic.Bool
+	stopping     chan struct{}
+	shutdownOnce sync.Once
+	wg           sync.WaitGroup
 }
 
 var _ ingest.Sink = (*ForwardingSink)(nil)
@@ -314,7 +315,14 @@ func isRetryableStatus(code int) bool {
 // finish, but only within ctx: once ctx expires the attempt is cancelled,
 // so a hung backend cannot hold up the drain or leak the worker past
 // Shutdown's return.
+//
+// Only the first call does anything. Later calls return at once.
 func (s *ForwardingSink) Shutdown(ctx context.Context) {
+	first := false
+	s.shutdownOnce.Do(func() { first = true })
+	if !first {
+		return
+	}
 	s.closed.Store(true)
 	close(s.stopping)
 

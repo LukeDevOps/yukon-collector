@@ -388,3 +388,14 @@ func TestForwardingSink_Shutdown_CancelsInFlightAttemptAtDeadline(t *testing.T) 
 	}
 	waitFor(t, time.Second, cancelled.Load)
 }
+
+func TestForwardingSink_Shutdown_SecondCallIsANoOp(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	sink := NewForwardingSink(testConfig(backend.URL))
+	sink.Shutdown(context.Background())
+	sink.Shutdown(context.Background()) // must not panic on the closed stop channel
+}
