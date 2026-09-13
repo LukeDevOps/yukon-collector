@@ -231,6 +231,15 @@ changing. Each can be overridden; durations use Go syntax (`30s`, `5m`).
 | `YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL` | `30s` | Cap on the retry wait |
 | `YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME` | `5m` | Total time to keep retrying one payload before dropping it |
 
+Trying this out locally needs no real backend: a second `yukon-collector`
+instance is a valid one, since `ForwardingSink` posts the same paths and
+body shape this collector itself accepts. Point one instance's
+`YUKON_COLLECTOR_FORWARD_URL` at another's address and its `LogSink` will
+print what the first instance relayed. `internal/forward`'s integration
+tests do the same thing without a second process, wiring `ForwardingSink`
+straight into a second `ingest.Handler` to confirm a payload decoded on
+one end survives the relay and decodes identically on the other.
+
 ## Development
 
 ```
