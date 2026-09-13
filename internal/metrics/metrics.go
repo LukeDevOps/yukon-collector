@@ -33,7 +33,7 @@ var (
 // label dimensions in the order Inc expects them. Names must be unique
 // within the process; a repeat panics, since it is a programming error.
 func NewCounter(name, help string, labels ...string) *Counter {
-	c := &Counter{name: name, help: help, labels: labels, series: make(map[string]*atomic.Int64)}
+	c := newCounter(name, help, labels...)
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	for _, existing := range registry {
@@ -43,6 +43,12 @@ func NewCounter(name, help string, labels ...string) *Counter {
 	}
 	registry = append(registry, c)
 	return c
+}
+
+// newCounter builds a counter without registering it, so tests can
+// exercise one in isolation.
+func newCounter(name, help string, labels ...string) *Counter {
+	return &Counter{name: name, help: help, labels: labels, series: make(map[string]*atomic.Int64)}
 }
 
 // Inc adds one to the series identified by values, which must match the
