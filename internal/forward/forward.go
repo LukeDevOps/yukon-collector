@@ -36,6 +36,11 @@ const (
 	defaultRetryInitialInterval = 5 * time.Second
 	defaultRetryMaxInterval     = 30 * time.Second
 	defaultRetryMaxElapsedTime  = 300 * time.Second
+
+	// maxResponseBytes bounds how much of a backend response body is read
+	// before the connection is released. A 202 carries no body worth
+	// reading; the read only exists to let the connection be reused.
+	maxResponseBytes = 64 << 10
 )
 
 // Config configures a ForwardingSink. URL is required; every other field
@@ -67,9 +72,12 @@ type Config struct {
 	// defaultQueueSize.
 	QueueSize int
 
-	// HTTPClient sends the relayed requests. Defaults to http.DefaultClient.
-	// Each request carries its own timeout via context, so the client
-	// itself does not need one.
+	// HTTPClient sends the relayed requests. Defaults to a client whose
+	// transport keeps one idle connection per shard to the backend, so
+	// concurrent workers do not churn connections the way
+	// http.DefaultTransport's two-per-host limit would. Each request
+	// carries its own timeout via context, so the client itself does not
+	// need one.
 	HTTPClient *http.Client
 
 	// Logger receives Warn logs for dropped payloads. Defaults to
@@ -98,7 +106,7 @@ func (c Config) withDefaults() Config {
 		c.QueueSize = defaultQueueSize
 	}
 	if c.HTTPClient == nil {
-		c.HTTPClient = http.DefaultClient
+		c.HTTPClient = newHTTPClient(c.Shards)
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -116,6 +124,17 @@ func (c Config) withDefaults() Config {
 		c.RetryMaxElapsedTime = defaultRetryMaxElapsedTime
 	}
 	return c
+}
+
+// newHTTPClient returns a client sized for shards concurrent workers all
+// talking to one backend host.
+func newHTTPClient(shards int) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = shards
+	if transport.MaxIdleConns < shards {
+		transport.MaxIdleConns = shards
+	}
+	return &http.Client{Transport: transport}
 }
 
 // queuedItem is a payload already marshaled to wire bytes, ready to POST.
@@ -356,7 +375,7 @@ func (s *ForwardingSink) attempt(ctx context.Context, item queuedItem) (retryabl
 		return true, 0, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return false, 0, nil

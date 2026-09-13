@@ -18,6 +18,7 @@ import (
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
 	"github.com/LukeDevOps/yukon-collector/internal/ingest"
+	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 )
 
 // discardLogger keeps test output free of expected Warn lines (queue-full,
@@ -492,5 +493,53 @@ func TestForwardingSink_DropLog_NamesTheService(t *testing.T) {
 
 	if got := logs.String(); !strings.Contains(got, "service=demo-service/instance-1") {
 		t.Fatalf("drop log does not name the service:\n%s", got)
+	}
+}
+
+func TestNewHTTPClient_IdleConnsMatchShardCount(t *testing.T) {
+	client := newHTTPClient(8)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", client.Transport)
+	}
+	if transport.MaxIdleConnsPerHost != 8 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want 8", transport.MaxIdleConnsPerHost)
+	}
+	if transport.MaxIdleConns < 8 {
+		t.Fatalf("MaxIdleConns = %d, want at least 8", transport.MaxIdleConns)
+	}
+}
+
+func TestForwardingSink_LargeResponseBody_DoesNotBlockDelivery(t *testing.T) {
+	var received atomic.Bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Store(true)
+		w.WriteHeader(http.StatusOK)
+		// Several times the read bound; the sink must not try to drain it all.
+		chunk := bytes.Repeat([]byte("x"), 1<<20)
+		for i := 0; i < 4; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer backend.Close()
+
+	sink := mustNewSink(t, testConfig(backend.URL))
+	sink.AcceptManifest(manifestWithService("svc"))
+	waitFor(t, time.Second, received.Load)
+
+	done := make(chan struct{})
+	go func() {
+		sink.Shutdown(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not return; the worker is likely still reading the oversized response")
+	}
+	if got := metrics.ForwardDelivered.Value("manifest"); got < 1 {
+		t.Fatalf("delivered count = %d, want at least 1 (a 200 with a big body is still a success)", got)
 	}
 }
