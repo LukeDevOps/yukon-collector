@@ -16,11 +16,11 @@ import (
 	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 )
 
-// staleAfter is how long a client's bucket is kept with no requests before
-// the cleanup loop evicts it. Idle clients are far more likely than an
-// attacker cycling source IPs to avoid throttling, so this only needs to
-// bound memory growth, not defend against eviction abuse.
-const staleAfter = 10 * time.Minute
+// defaultStaleAfter is how long a client's bucket is kept with no
+// requests before the cleanup loop evicts it. Idle clients are far more
+// likely than an attacker cycling source IPs to avoid throttling, so this
+// only needs to bound memory growth, not defend against eviction abuse.
+const defaultStaleAfter = 10 * time.Minute
 
 // Limiter throttles requests per client IP using a token bucket per key.
 // The zero value is not usable; construct with New.
@@ -31,6 +31,10 @@ type Limiter struct {
 	// clientIPHeader names a request header to read the client IP from
 	// instead of RemoteAddr. Empty means RemoteAddr is used.
 	clientIPHeader string
+
+	// staleAfter is the idle time after which a client's bucket is
+	// evicted, and the interval the eviction loop runs on.
+	staleAfter time.Duration
 
 	mu       sync.Mutex
 	visitors map[string]*visitor
@@ -61,16 +65,23 @@ func WithClientIPHeader(name string) Option {
 	return func(l *Limiter) { l.clientIPHeader = name }
 }
 
+// withStaleAfter overrides the idle eviction time. Tests use it to make
+// eviction observable without waiting ten minutes.
+func withStaleAfter(d time.Duration) Option {
+	return func(l *Limiter) { l.staleAfter = d }
+}
+
 // New creates a Limiter allowing r requests per second, per client IP, with
 // burst as the largest instantaneous spike a single client may send. It
 // starts a background goroutine to evict idle clients; call Stop when done
 // with it.
 func New(r rate.Limit, burst int, opts ...Option) *Limiter {
 	l := &Limiter{
-		rate:     r,
-		burst:    burst,
-		visitors: make(map[string]*visitor),
-		stop:     make(chan struct{}),
+		rate:       r,
+		burst:      burst,
+		staleAfter: defaultStaleAfter,
+		visitors:   make(map[string]*visitor),
+		stop:       make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(l)
@@ -138,7 +149,7 @@ func retryAfterSeconds(d time.Duration) int {
 }
 
 func (l *Limiter) evictStaleLoop() {
-	ticker := time.NewTicker(staleAfter)
+	ticker := time.NewTicker(l.staleAfter)
 	defer ticker.Stop()
 	for {
 		select {
@@ -147,7 +158,7 @@ func (l *Limiter) evictStaleLoop() {
 		case now := <-ticker.C:
 			l.mu.Lock()
 			for key, v := range l.visitors {
-				if now.Sub(v.lastSeen) > staleAfter {
+				if now.Sub(v.lastSeen) > l.staleAfter {
 					delete(l.visitors, key)
 				}
 			}

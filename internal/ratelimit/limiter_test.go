@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -147,5 +148,57 @@ func TestLimiter_ClientIPHeader_AbsentFallsBackToRemoteAddr(t *testing.T) {
 	rec := doRequest(handler, "10.0.0.1:1234")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d (missing header must key on RemoteAddr)", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+func (l *Limiter) hasVisitor(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.visitors[key]
+	return ok
+}
+
+func TestLimiter_IdleClientIsEvicted(t *testing.T) {
+	l := New(rate.Limit(1), 1, withStaleAfter(20*time.Millisecond))
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	doRequest(handler, "10.0.0.1:1234")
+	if !l.hasVisitor("10.0.0.1") {
+		t.Fatal("visitor not tracked after its first request")
+	}
+
+	// Two ticks is enough for the idle threshold to pass and be observed.
+	deadline := time.Now().Add(time.Second)
+	for l.hasVisitor("10.0.0.1") {
+		if time.Now().After(deadline) {
+			t.Fatal("idle visitor was never evicted")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestLimiter_EvictedClientStartsWithAFullBucket(t *testing.T) {
+	l := New(rate.Limit(0.001), 1, withStaleAfter(20*time.Millisecond)) // refill far slower than the test
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	if rec := doRequest(handler, "10.0.0.1:1234"); rec.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec := doRequest(handler, "10.0.0.1:1234"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for l.hasVisitor("10.0.0.1") {
+		if time.Now().After(deadline) {
+			t.Fatal("idle visitor was never evicted")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if rec := doRequest(handler, "10.0.0.1:1234"); rec.Code != http.StatusOK {
+		t.Fatalf("status after eviction = %d, want %d (a new bucket starts full)", rec.Code, http.StatusOK)
 	}
 }
