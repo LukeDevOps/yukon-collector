@@ -7,6 +7,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 )
 
 const bearerPrefix = "Bearer "
@@ -21,6 +23,7 @@ func RequireBearerToken(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		presented, ok := bearerToken(r.Header.Get("Authorization"))
 		if !ok || !tokenMatches(presented, want) {
+			metrics.AuthRejected.Inc()
 			w.Header().Set("WWW-Authenticate", `Bearer realm="yukon-collector"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

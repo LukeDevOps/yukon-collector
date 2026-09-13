@@ -74,6 +74,8 @@ repo and is published to the Buf Schema Registry as
 - `internal/ratelimit` — a per-client-IP token bucket, also wrapped around
   the ingest routes as HTTP middleware, checked before auth so a request
   flood is capped regardless of whether it carries a valid token.
+- `internal/metrics` — a handful of counters served at `GET /metrics` in
+  the Prometheus text format, with no client library dependency.
 - `cmd/yukon-collector` — a minimal HTTP server wiring the sink into the
   handler and listening on `:4319` (the agent's default
   `collectorEndpoint`), overridable via `YUKON_COLLECTOR_ADDR`.
@@ -165,6 +167,24 @@ never gated on auth.
 
 `GET /healthz` returns `200` once the server is up, for liveness/readiness
 probes.
+
+### Metrics
+
+`GET /metrics` serves counters in the Prometheus text format. Like
+`/healthz` it is unauthenticated and unthrottled; it exposes only counts.
+
+| Counter | Labels | Meaning |
+| --- | --- | --- |
+| `yukon_collector_ingest_accepted_total` | `payload` | Decoded, valid, handed to the sink |
+| `yukon_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before the sink: `content_type`, `too_large`, `read`, `malformed`, `invalid` |
+| `yukon_collector_auth_rejected_total` | | 401 responses |
+| `yukon_collector_rate_limited_total` | | 429 responses |
+| `yukon_collector_forward_delivered_total` | `payload` | Backend accepted the payload |
+| `yukon_collector_forward_retries_total` | `payload` | Attempts made after a retryable failure |
+| `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `shutting_down`, `queue_full`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
+
+`payload` is `deltas` or `manifest`. The dropped counter is the one to
+alert on: every increment is agent data that never reached the backend.
 
 ### Forwarding
 

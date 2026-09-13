@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+
+	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 )
 
 // Sink receives decoded payloads. A real backend implements this to persist
@@ -37,6 +39,15 @@ const (
 	DeltaBatchPath = "/v1/yukon/deltas"
 	ManifestPath   = "/v1/yukon/manifest"
 )
+
+// PayloadLabel returns the metrics label for the payload type served at
+// path: "deltas" or "manifest".
+func PayloadLabel(path string) string {
+	if path == ManifestPath {
+		return "manifest"
+	}
+	return "deltas"
+}
 
 // Handler implements the agent-facing HTTP surface described in the yukon
 // agent's "Transport" design: one POST per flush interval, body is a
@@ -71,6 +82,7 @@ func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.sink.AcceptDeltaBatch(&batch)
+	metrics.IngestAccepted.Inc("deltas")
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -84,6 +96,7 @@ func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.sink.AcceptManifest(&manifest)
+	metrics.IngestAccepted.Inc("manifest")
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -117,7 +130,17 @@ func validateManifest(manifest *yukonpb.ProbeManifest) error {
 // reject answers a decoded but unusable payload with 400.
 func (h *Handler) reject(w http.ResponseWriter, what string, err error) {
 	h.logger.Warn("rejecting invalid "+what, "error", err)
+	metrics.IngestRejected.Inc(payloadLabelFor(what), "invalid")
 	http.Error(w, "invalid "+what+": "+err.Error(), http.StatusBadRequest)
+}
+
+// payloadLabelFor maps the human name used in log lines to the metrics
+// label value.
+func payloadLabelFor(what string) string {
+	if what == "manifest" {
+		return "manifest"
+	}
+	return "deltas"
 }
 
 // decode reads r's body into msg. It reports false after writing the
@@ -125,15 +148,19 @@ func (h *Handler) reject(w http.ResponseWriter, what string, err error) {
 // over maxBodyBytes, 400 for anything that is not valid protobuf. what
 // names the payload in log lines and error bodies.
 func (h *Handler) decode(w http.ResponseWriter, r *http.Request, msg proto.Message, what string) bool {
+	payload := payloadLabelFor(what)
 	if !checkContentType(w, r) {
+		metrics.IngestRejected.Inc(payload, "content_type")
 		return false
 	}
-	body, err := readBody(w, r)
+	body, reason, err := readBody(w, r)
 	if err != nil {
+		metrics.IngestRejected.Inc(payload, reason)
 		return false
 	}
 	if err := proto.Unmarshal(body, msg); err != nil {
 		h.logger.Warn("rejecting malformed "+what, "error", err)
+		metrics.IngestRejected.Inc(payload, "malformed")
 		http.Error(w, "malformed "+what, http.StatusBadRequest)
 		return false
 	}
@@ -151,17 +178,19 @@ func checkContentType(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+// readBody reads the request body up to maxBodyBytes. On failure it
+// writes the error response and returns the metrics reason label.
+func readBody(w http.ResponseWriter, r *http.Request) (body []byte, reason string, err error) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err = io.ReadAll(r.Body)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "failed to read body", http.StatusBadRequest)
+			return nil, "too_large", err
 		}
-		return nil, err
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return nil, "read", err
 	}
-	return body, nil
+	return body, "", nil
 }

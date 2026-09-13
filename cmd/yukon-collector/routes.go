@@ -7,6 +7,7 @@ import (
 	"github.com/LukeDevOps/yukon-collector/internal/auth"
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/ingest"
+	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 )
 
@@ -15,8 +16,9 @@ import (
 // "Authorization: Bearer <authToken>" header. When limiter is non-nil, the
 // ingest routes are throttled per client IP, checked before auth so a
 // flood is capped regardless of whether it carries a valid token.
-// /healthz stays open, unauthenticated and unthrottled, for
-// liveness/readiness probes.
+// /healthz and /metrics stay open, unauthenticated and unthrottled: the
+// first for liveness/readiness probes, the second for a Prometheus
+// scraper, which exposes only counts.
 //
 // When forwardURL is non-empty, ingested payloads are relayed to that
 // backend via a forward.ForwardingSink, which registerRoutes returns so
@@ -64,6 +66,7 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.Handle("GET /metrics", metrics.Handler())
 
 	return fwd, nil
 }

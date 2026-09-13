@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 )
 
 // staleAfter is how long a client's bucket is kept with no requests before
@@ -89,6 +91,7 @@ func (l *Limiter) Stop() {
 func (l *Limiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ok, retryAfter := l.allow(l.clientIP(r)); !ok {
+			metrics.RateLimited.Inc()
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return

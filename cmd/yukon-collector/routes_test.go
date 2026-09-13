@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"golang.org/x/time/rate"
@@ -209,5 +211,31 @@ func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
 	mux := http.NewServeMux()
 	if _, err := registerRoutes(mux, nil, "", nil, "not a url", ""); err == nil {
 		t.Fatal("expected an error for an unusable forward URL, got nil")
+	}
+}
+
+func TestRegisterRoutes_Metrics_CountsAcceptedIngest(t *testing.T) {
+	mux := http.NewServeMux()
+	mustRegisterRoutes(t, mux, "", nil, "", "")
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp := postDelta(t, server.URL)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("post status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+
+	metricsResp, err := http.Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("get metrics: %v", err)
+	}
+	defer metricsResp.Body.Close()
+	body, _ := io.ReadAll(metricsResp.Body)
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %d, want %d", metricsResp.StatusCode, http.StatusOK)
+	}
+	if !strings.Contains(string(body), `yukon_collector_ingest_accepted_total{payload="deltas"} `) {
+		t.Fatalf("metrics output missing the accepted-deltas series:\n%s", body)
 	}
 }

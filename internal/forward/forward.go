@@ -25,6 +25,7 @@ import (
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
 	"github.com/LukeDevOps/yukon-collector/internal/ingest"
+	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 )
 
 const (
@@ -216,6 +217,7 @@ func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
 	body, err := proto.Marshal(batch)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping delta batch: marshal failed", "error", err)
+		metrics.ForwardDropped.Inc("deltas", "marshal")
 		return
 	}
 	key := batch.GetResource().GetServiceName() + "/" + batch.GetResource().GetServiceInstanceId()
@@ -226,6 +228,7 @@ func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 	body, err := proto.Marshal(manifest)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping manifest: marshal failed", "error", err)
+		metrics.ForwardDropped.Inc("manifest", "marshal")
 		return
 	}
 	// ProbeManifest carries no instance ID: a manifest describes a
@@ -236,24 +239,36 @@ func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 
 func (s *ForwardingSink) enqueue(item queuedItem) {
 	if s.closed.Load() {
-		s.dropped(item, "sink is shutting down", nil)
+		s.dropped(item, "shutting_down", nil)
 		return
 	}
 	sh := s.shards[shardIndex(item.key, len(s.shards))]
 	select {
 	case sh.queue <- item:
 	default:
-		s.dropped(item, "shard queue full", nil)
+		s.dropped(item, "queue_full", nil)
 	}
 }
 
-// dropped logs one discarded payload with the service it belonged to.
+// dropReasons maps a drop reason label to the text logged for it.
+var dropReasons = map[string]string{
+	"shutting_down":           "sink is shutting down",
+	"queue_full":              "shard queue full",
+	"permanent":               "permanent failure",
+	"retry_exhausted":         "retry budget exhausted",
+	"shutdown_deadline":       "shutdown deadline exceeded",
+	"shutdown_attempt_failed": "shutdown drain attempt failed",
+}
+
+// dropped records one discarded payload: a Warn log naming the service it
+// belonged to, and a count under reason.
 func (s *ForwardingSink) dropped(item queuedItem, reason string, err error) {
 	attrs := []any{"service", item.key, "path", item.path}
 	if err != nil {
 		attrs = append(attrs, "error", err)
 	}
-	s.cfg.Logger.Warn("dropping payload: "+reason, attrs...)
+	s.cfg.Logger.Warn("dropping payload: "+dropReasons[reason], attrs...)
+	metrics.ForwardDropped.Inc(ingest.PayloadLabel(item.path), reason)
 }
 
 // shardIndex maps key to a shard deterministically: the same key always
@@ -290,22 +305,25 @@ func (s *ForwardingSink) runShard(sh *shard) {
 // budget, or the sink starts shutting down.
 func (s *ForwardingSink) deliver(item queuedItem) {
 	b := newBackoff(s.cfg.RetryInitialInterval, s.cfg.RetryMaxInterval, s.cfg.RetryMaxElapsedTime)
+	payload := ingest.PayloadLabel(item.path)
 	for {
 		retryable, retryAfter, err := s.attempt(s.ctx, item)
 		if err == nil {
+			metrics.ForwardDelivered.Inc(payload)
 			return
 		}
 		if !retryable {
-			s.dropped(item, "permanent failure", err)
+			s.dropped(item, "permanent", err)
 			return
 		}
 		wait, ok := b.next(retryAfter)
 		if !ok {
-			s.dropped(item, "retry budget exhausted", err)
+			s.dropped(item, "retry_exhausted", err)
 			return
 		}
 		select {
 		case <-time.After(wait):
+			metrics.ForwardRetries.Inc(payload)
 		case <-s.stopping:
 			return
 		}
@@ -407,11 +425,13 @@ func (s *ForwardingSink) drainOnce(ctx context.Context, sh *shard) {
 		select {
 		case item := <-sh.queue:
 			if ctx.Err() != nil {
-				s.dropped(item, "shutdown deadline exceeded", nil)
+				s.dropped(item, "shutdown_deadline", nil)
 				continue
 			}
 			if _, _, err := s.attempt(ctx, item); err != nil {
-				s.dropped(item, "shutdown drain attempt failed", err)
+				s.dropped(item, "shutdown_attempt_failed", err)
+			} else {
+				metrics.ForwardDelivered.Inc(ingest.PayloadLabel(item.path))
 			}
 		default:
 			return
