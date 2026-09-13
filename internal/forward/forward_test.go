@@ -1,11 +1,13 @@
 package forward
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -469,5 +471,26 @@ func TestForwardingSink_RetryAfterHeader_DelaysNextAttempt(t *testing.T) {
 	// header must stretch that to at least a second.
 	if gap := time.Duration(secondAt.Load() - firstAt.Load()); gap < time.Second {
 		t.Fatalf("second attempt came %v after the first, want at least the 1s Retry-After", gap)
+	}
+}
+
+func TestForwardingSink_DropLog_NamesTheService(t *testing.T) {
+	var logs bytes.Buffer
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer backend.Close()
+
+	cfg := testConfig(backend.URL)
+	cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	sink := mustNewSink(t, cfg)
+
+	sink.AcceptDeltaBatch(&yukonpb.DeltaBatch{
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+	})
+	sink.Shutdown(context.Background())
+
+	if got := logs.String(); !strings.Contains(got, "service=demo-service/instance-1") {
+		t.Fatalf("drop log does not name the service:\n%s", got)
 	}
 }

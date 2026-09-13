@@ -118,8 +118,12 @@ func (c Config) withDefaults() Config {
 }
 
 // queuedItem is a payload already marshaled to wire bytes, ready to POST.
-// Marshaling happens once, in Accept, not on every retry attempt.
+// Marshaling happens once, in Accept, not on every retry attempt. key is
+// the service identity the item was sharded on; it names the owner in
+// log lines when the item is dropped, so an operator can tell whose data
+// went missing.
 type queuedItem struct {
+	key  string
 	path string
 	body []byte
 }
@@ -215,7 +219,7 @@ func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
 		return
 	}
 	key := batch.GetResource().GetServiceName() + "/" + batch.GetResource().GetServiceInstanceId()
-	s.enqueue(key, queuedItem{path: ingest.DeltaBatchPath, body: body})
+	s.enqueue(queuedItem{key: key, path: ingest.DeltaBatchPath, body: body})
 }
 
 func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
@@ -227,20 +231,29 @@ func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 	// ProbeManifest carries no instance ID: a manifest describes a
 	// service's probe set, not one running instance of it.
 	key := manifest.GetServiceName()
-	s.enqueue(key, queuedItem{path: ingest.ManifestPath, body: body})
+	s.enqueue(queuedItem{key: key, path: ingest.ManifestPath, body: body})
 }
 
-func (s *ForwardingSink) enqueue(key string, item queuedItem) {
+func (s *ForwardingSink) enqueue(item queuedItem) {
 	if s.closed.Load() {
-		s.cfg.Logger.Warn("dropping payload: sink is shutting down", "path", item.path)
+		s.dropped(item, "sink is shutting down", nil)
 		return
 	}
-	sh := s.shards[shardIndex(key, len(s.shards))]
+	sh := s.shards[shardIndex(item.key, len(s.shards))]
 	select {
 	case sh.queue <- item:
 	default:
-		s.cfg.Logger.Warn("dropping payload: shard queue full", "path", item.path)
+		s.dropped(item, "shard queue full", nil)
 	}
+}
+
+// dropped logs one discarded payload with the service it belonged to.
+func (s *ForwardingSink) dropped(item queuedItem, reason string, err error) {
+	attrs := []any{"service", item.key, "path", item.path}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	s.cfg.Logger.Warn("dropping payload: "+reason, attrs...)
 }
 
 // shardIndex maps key to a shard deterministically: the same key always
@@ -283,12 +296,12 @@ func (s *ForwardingSink) deliver(item queuedItem) {
 			return
 		}
 		if !retryable {
-			s.cfg.Logger.Warn("dropping payload: permanent failure", "path", item.path, "error", err)
+			s.dropped(item, "permanent failure", err)
 			return
 		}
 		wait, ok := b.next(retryAfter)
 		if !ok {
-			s.cfg.Logger.Warn("dropping payload: retry budget exhausted", "path", item.path, "error", err)
+			s.dropped(item, "retry budget exhausted", err)
 			return
 		}
 		select {
@@ -394,11 +407,11 @@ func (s *ForwardingSink) drainOnce(ctx context.Context, sh *shard) {
 		select {
 		case item := <-sh.queue:
 			if ctx.Err() != nil {
-				s.cfg.Logger.Warn("dropping payload: shutdown deadline exceeded", "path", item.path)
+				s.dropped(item, "shutdown deadline exceeded", nil)
 				continue
 			}
 			if _, _, err := s.attempt(ctx, item); err != nil {
-				s.cfg.Logger.Warn("dropping payload: shutdown drain attempt failed", "path", item.path, "error", err)
+				s.dropped(item, "shutdown drain attempt failed", err)
 			}
 		default:
 			return
