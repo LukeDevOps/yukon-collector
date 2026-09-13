@@ -439,3 +439,35 @@ func TestForwardingSink_TrailingSlashURL_PostsToCleanPath(t *testing.T) {
 		t.Fatalf("path = %q, want %q (no doubled slash from the trailing slash)", gotPath, ingest.ManifestPath)
 	}
 }
+
+func TestForwardingSink_RetryAfterHeader_DelaysNextAttempt(t *testing.T) {
+	var attempts atomic.Int32
+	var firstAt, secondAt atomic.Int64 // unix nanos, written by the handler goroutine
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch attempts.Add(1) {
+		case 1:
+			firstAt.Store(time.Now().UnixNano())
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			secondAt.Store(time.Now().UnixNano())
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer backend.Close()
+
+	cfg := testConfig(backend.URL)
+	cfg.RetryMaxElapsedTime = 10 * time.Second // room for the 1s hint
+	sink := mustNewSink(t, cfg)
+	defer sink.Shutdown(context.Background())
+
+	sink.AcceptManifest(manifestWithService("svc"))
+	waitFor(t, 3*time.Second, func() bool { return attempts.Load() == 2 })
+
+	// The backoff alone would retry within tens of milliseconds; the
+	// header must stretch that to at least a second.
+	if gap := time.Duration(secondAt.Load() - firstAt.Load()); gap < time.Second {
+		t.Fatalf("second attempt came %v after the first, want at least the 1s Retry-After", gap)
+	}
+}

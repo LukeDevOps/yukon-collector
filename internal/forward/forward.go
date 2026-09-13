@@ -278,7 +278,7 @@ func (s *ForwardingSink) runShard(sh *shard) {
 func (s *ForwardingSink) deliver(item queuedItem) {
 	b := newBackoff(s.cfg.RetryInitialInterval, s.cfg.RetryMaxInterval, s.cfg.RetryMaxElapsedTime)
 	for {
-		retryable, err := s.attempt(s.ctx, item)
+		retryable, retryAfter, err := s.attempt(s.ctx, item)
 		if err == nil {
 			return
 		}
@@ -286,7 +286,7 @@ func (s *ForwardingSink) deliver(item queuedItem) {
 			s.cfg.Logger.Warn("dropping payload: permanent failure", "path", item.path, "error", err)
 			return
 		}
-		wait, ok := b.next()
+		wait, ok := b.next(retryAfter)
 		if !ok {
 			s.cfg.Logger.Warn("dropping payload: retry budget exhausted", "path", item.path, "error", err)
 			return
@@ -305,14 +305,15 @@ func (s *ForwardingSink) deliver(item queuedItem) {
 // retrying at all: only 429/502/503/504 are, per the OTLP spec as
 // otlphttpexporter actually implements it, plus any error that means no
 // response came back (a plain 500 is not retried; the collector doesn't
-// assume "5xx means retry").
-func (s *ForwardingSink) attempt(ctx context.Context, item queuedItem) (retryable bool, err error) {
+// assume "5xx means retry"). retryAfter is the wait the backend asked
+// for in a Retry-After header, or zero.
+func (s *ForwardingSink) attempt(ctx context.Context, item queuedItem) (retryable bool, retryAfter time.Duration, err error) {
 	reqCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, s.cfg.URL+item.path, bytes.NewReader(item.body))
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	if s.cfg.AuthToken != "" {
@@ -321,15 +322,19 @@ func (s *ForwardingSink) attempt(ctx context.Context, item queuedItem) (retryabl
 
 	resp, err := s.cfg.HTTPClient.Do(req)
 	if err != nil {
-		return true, err
+		return true, 0, err
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return false, nil
+		return false, 0, nil
 	}
-	return isRetryableStatus(resp.StatusCode), fmt.Errorf("backend returned %s", resp.Status)
+	err = fmt.Errorf("backend returned %s", resp.Status)
+	if !isRetryableStatus(resp.StatusCode) {
+		return false, 0, err
+	}
+	return true, parseRetryAfter(resp.Header, time.Now()), err
 }
 
 func isRetryableStatus(code int) bool {
@@ -392,7 +397,7 @@ func (s *ForwardingSink) drainOnce(ctx context.Context, sh *shard) {
 				s.cfg.Logger.Warn("dropping payload: shutdown deadline exceeded", "path", item.path)
 				continue
 			}
-			if _, err := s.attempt(ctx, item); err != nil {
+			if _, _, err := s.attempt(ctx, item); err != nil {
 				s.cfg.Logger.Warn("dropping payload: shutdown drain attempt failed", "path", item.path, "error", err)
 			}
 		default:
