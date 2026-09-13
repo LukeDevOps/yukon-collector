@@ -1,7 +1,8 @@
 package metrics
 
-// The collector's counters. Label values for "payload" are "deltas" or
-// "manifest"; "reason" values are listed on each counter.
+// The collector's counters. Label values for "payload" are "deltas",
+// "manifest", or "static_baseline"; "reason" values are listed on each
+// counter.
 var (
 	// IngestAccepted counts payloads that decoded, passed validation, and
 	// reached the sink.

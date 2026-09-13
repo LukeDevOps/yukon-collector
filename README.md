@@ -26,8 +26,8 @@ yukon agent  --POST protobuf-->  yukon-collector  -->  Sink
  every 30-60s)                    decode only)           storage, aggregation)
 ```
 
-The agent's `HttpOtlpStyleExporter` posts two payload types, matching the
-paths this collector serves:
+The agent's `HttpOtlpStyleExporter` posts three payload types, matching
+the paths this collector serves:
 
 - `POST /v1/yukon/deltas` — a `DeltaBatch`: resource attributes
   (service name, version, instance ID) plus per-probe hit counts since the
@@ -37,8 +37,14 @@ paths this collector serves:
 - `POST /v1/yukon/manifest` — a `ProbeManifest`: maps probe IDs to their
   source location (class, method, line, branch index), sent incrementally
   so the collector only needs metadata for probes it hasn't already seen.
+- `POST /v1/yukon/static-baseline` — a `StaticBaseline`: an opt-in,
+  once-per-process static scan of a service instance's classes, sent as
+  one or more chunks. Every chunk carries the same instance and
+  `scanned_at`, so `(instance, scanned_at)` identifies one scan; a
+  backend must hold every chunk (`chunk_index` of `chunk_count`) before
+  it can diff the scan against anything.
 
-Both are protobuf over plain HTTP, not gRPC — the agent sends one batch per
+All three are protobuf over plain HTTP, not gRPC — the agent sends one batch per
 flush interval per instance, so gRPC's multiplexing advantage doesn't apply,
 and plain HTTP avoids shading grpc-java/Netty into every instrumented JVM.
 See the agent's own `CLAUDE.md` ("Transport", "Hit-data recording &
@@ -52,10 +58,12 @@ repo and is published to the Buf Schema Registry as
   for the yukon wire schema, generated remotely by the BSR and pulled in
   as an ordinary Go module dependency. No local `.proto` copy or `protoc`
   step in this repo.
-- `internal/ingest.Handler` — decodes the two payload types above and hands
-  each to a `Sink`. Rejects malformed bodies, and decoded ones missing
-  the service name or instance ID a backend needs to attribute them,
-  with `400` before they reach the sink; accepts valid ones with `202`.
+- `internal/ingest.Handler` — decodes the three payload types above and
+  hands each to a `Sink`. Rejects malformed bodies, and decoded ones
+  missing the service name or instance ID a backend needs to attribute
+  them, with `400` before they reach the sink; accepts valid ones with
+  `202`. A manifest is rejected without its instance ID too, since
+  `class_id` is only meaningful within one running instance.
 - `internal/ingest.Sink` — the seam a real backend implements. The
   collector has no storage of its own, so this interface is the entire
   contract between "decoded a payload" and "did something with it."
@@ -115,9 +123,9 @@ change that. Without forwarding configured every payload is logged at
 ### Authentication
 
 Set `YUKON_COLLECTOR_AUTH_TOKEN` to require a matching
-`Authorization: Bearer <token>` header on `/v1/yukon/deltas` and
-`/v1/yukon/manifest`. Point the agent's exporter at the same token so its
-requests carry the header.
+`Authorization: Bearer <token>` header on `/v1/yukon/deltas`,
+`/v1/yukon/manifest`, and `/v1/yukon/static-baseline`. Point the agent's
+exporter at the same token so its requests carry the header.
 
 ```
 YUKON_COLLECTOR_AUTH_TOKEN=s3cret go run ./cmd/yukon-collector
@@ -145,10 +153,11 @@ docker run --rm -p 4319:4319 -e YUKON_COLLECTOR_AUTH_TOKEN=s3cret yukon-collecto
 
 ### Rate limiting
 
-`/v1/yukon/deltas` and `/v1/yukon/manifest` are throttled per client IP: 5
-requests/second with a burst of 20 by default, sized around the agent's
-30-60s flush interval. Override with `YUKON_COLLECTOR_RATE_LIMIT_RPS` and
-`YUKON_COLLECTOR_RATE_LIMIT_BURST`, or set the rate to `0` to disable it.
+`/v1/yukon/deltas`, `/v1/yukon/manifest`, and `/v1/yukon/static-baseline`
+are throttled per client IP: 5 requests/second with a burst of 20 by
+default, sized around the agent's 30-60s flush interval. Override with
+`YUKON_COLLECTOR_RATE_LIMIT_RPS` and `YUKON_COLLECTOR_RATE_LIMIT_BURST`,
+or set the rate to `0` to disable it.
 
 ```
 YUKON_COLLECTOR_RATE_LIMIT_RPS=10 YUKON_COLLECTOR_RATE_LIMIT_BURST=50 go run ./cmd/yukon-collector
@@ -190,16 +199,18 @@ probes.
 | `yukon_collector_forward_retries_total` | `payload` | Attempts made after a retryable failure |
 | `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `shutting_down`, `queue_full`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
 
-`payload` is `deltas` or `manifest`. The dropped counter is the one to
-alert on: every increment is agent data that never reached the backend.
+`payload` is `deltas`, `manifest`, or `static_baseline`. The dropped
+counter is the one to alert on: every increment is agent data that never
+reached the backend.
 
 ### Forwarding
 
 By default the collector only logs what it receives. Set
 `YUKON_COLLECTOR_FORWARD_URL` to the base URL of a backend and every
 decoded payload is relayed there instead, as a `POST` to the same
-`/v1/yukon/deltas` and `/v1/yukon/manifest` paths with the same
-`application/x-protobuf` body. `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN`, if
+`/v1/yukon/deltas`, `/v1/yukon/manifest`, and
+`/v1/yukon/static-baseline` paths with the same `application/x-protobuf`
+body. `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN`, if
 set, is sent as a bearer token on those requests. It is a separate secret
 from `YUKON_COLLECTOR_AUTH_TOKEN`: the agent authenticates to the
 collector, the collector authenticates to the backend, and the two need

@@ -26,6 +26,7 @@ type captureSink struct {
 	mu           sync.Mutex
 	deltaBatches []*yukonpb.DeltaBatch
 	manifests    []*yukonpb.ProbeManifest
+	baselines    []*yukonpb.StaticBaseline
 }
 
 func (c *captureSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
@@ -40,6 +41,12 @@ func (c *captureSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 	c.manifests = append(c.manifests, manifest)
 }
 
+func (c *captureSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baselines = append(c.baselines, baseline)
+}
+
 func (c *captureSink) deltaBatchCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -52,6 +59,12 @@ func (c *captureSink) manifestCount() int {
 	return len(c.manifests)
 }
 
+func (c *captureSink) baselineCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.baselines)
+}
+
 func (c *captureSink) lastDeltaBatch() *yukonpb.DeltaBatch {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -62,6 +75,12 @@ func (c *captureSink) lastManifest() *yukonpb.ProbeManifest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.manifests[len(c.manifests)-1]
+}
+
+func (c *captureSink) baselinesSnapshot() []*yukonpb.StaticBaseline {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*yukonpb.StaticBaseline(nil), c.baselines...)
 }
 
 // newReferenceBackend stands up a real ingest.Handler, the same one the
@@ -132,7 +151,8 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 	defer front.Close()
 
 	sent := &yukonpb.ProbeManifest{
-		ServiceName: "checkout",
+		ServiceName:       "checkout",
+		ServiceInstanceId: "instance-7",
 		Probes: []*yukonpb.ProbeLocation{
 			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, ClassName: "CheckoutService", MethodName: "applyDiscount"},
 		},
@@ -154,5 +174,64 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 	waitFor(t, time.Second, func() bool { return sink.manifestCount() == 1 })
 	if got := sink.lastManifest(); !proto.Equal(got, sent) {
 		t.Errorf("backend decoded %v, want %v", got, sent)
+	}
+}
+
+func TestIntegration_StaticBaseline_RoundTripsThroughRealHandlerOnBothEnds(t *testing.T) {
+	backend, sink := newReferenceBackend()
+	defer backend.Close()
+
+	front := newFrontCollector(t, backend.URL)
+	defer front.Close()
+
+	resource := &yukonpb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7"}
+	const scannedAt = 1700000000
+
+	chunk0 := &yukonpb.StaticBaseline{
+		Resource:   resource,
+		ScannedAt:  scannedAt,
+		ChunkIndex: 0,
+		ChunkCount: 2,
+		DeclaredClasses: []*yukonpb.DeclaredClass{
+			{ClassName: "CheckoutService", Methods: []*yukonpb.DeclaredMethod{{MethodName: "applyDiscount", MethodDescriptor: "()V"}}},
+		},
+	}
+	chunk1 := &yukonpb.StaticBaseline{
+		Resource:   resource,
+		ScannedAt:  scannedAt,
+		ChunkIndex: 1,
+		ChunkCount: 2,
+		DeclaredClasses: []*yukonpb.DeclaredClass{
+			{ClassName: "PaymentService", Methods: []*yukonpb.DeclaredMethod{{MethodName: "charge", MethodDescriptor: "()V"}}},
+		},
+	}
+
+	for _, chunk := range []*yukonpb.StaticBaseline{chunk0, chunk1} {
+		body, err := proto.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("marshal baseline chunk %d: %v", chunk.GetChunkIndex(), err)
+		}
+		resp, err := http.Post(front.URL+ingest.StaticBaselinePath, "application/x-protobuf", strings.NewReader(string(body)))
+		if err != nil {
+			t.Fatalf("post chunk %d to front collector: %v", chunk.GetChunkIndex(), err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("front collector status for chunk %d = %d, want %d", chunk.GetChunkIndex(), resp.StatusCode, http.StatusAccepted)
+		}
+	}
+
+	waitFor(t, time.Second, func() bool { return sink.baselineCount() == 2 })
+
+	got := sink.baselinesSnapshot()
+	byChunk := map[int32]*yukonpb.StaticBaseline{got[0].GetChunkIndex(): got[0], got[1].GetChunkIndex(): got[1]}
+	if !proto.Equal(byChunk[0], chunk0) {
+		t.Errorf("backend decoded chunk 0 as %v, want %v", byChunk[0], chunk0)
+	}
+	if !proto.Equal(byChunk[1], chunk1) {
+		t.Errorf("backend decoded chunk 1 as %v, want %v", byChunk[1], chunk1)
+	}
+	if byChunk[0].GetScannedAt() != byChunk[1].GetScannedAt() {
+		t.Errorf("chunk scanned_at mismatch: %d vs %d", byChunk[0].GetScannedAt(), byChunk[1].GetScannedAt())
 	}
 }

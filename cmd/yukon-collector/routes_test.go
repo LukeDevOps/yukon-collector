@@ -37,6 +37,27 @@ func deltaRequest(t *testing.T, serverURL string) *http.Request {
 	return req
 }
 
+// staticBaselineRequest builds a POST to the static-baseline route
+// carrying the smallest baseline the handler accepts: identity, a
+// scanned_at, and a single chunk.
+func staticBaselineRequest(t *testing.T, serverURL string) *http.Request {
+	t.Helper()
+	body, err := proto.Marshal(&yukonpb.StaticBaseline{
+		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		ScannedAt:  1700000000,
+		ChunkCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal baseline: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/yukon/static-baseline", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	return req
+}
+
 // mustRegisterRoutes wires routes for a config the test expects to be valid.
 func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
 	t.Helper()
@@ -65,6 +86,34 @@ func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 	}
 
 	req2 := deltaRequest(t, server.URL)
+	req2.Header.Set("Authorization", "Bearer s3cret")
+
+	resp2, err := server.Client().Do(req2)
+	if err != nil {
+		t.Fatalf("post with auth: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("status with auth = %d, want %d", resp2.StatusCode, http.StatusAccepted)
+	}
+}
+
+func TestRegisterRoutes_AuthTokenSet_StaticBaselineRequiresMatchingHeader(t *testing.T) {
+	mux := http.NewServeMux()
+	mustRegisterRoutes(t, mux, "s3cret", nil, "", "")
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := server.Client().Do(staticBaselineRequest(t, server.URL))
+	if err != nil {
+		t.Fatalf("post without auth: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status without auth = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	req2 := staticBaselineRequest(t, server.URL)
 	req2.Header.Set("Authorization", "Bearer s3cret")
 
 	resp2, err := server.Client().Do(req2)

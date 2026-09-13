@@ -38,3 +38,19 @@ func (s *LogSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 		"skipped_classes", len(manifest.GetSkippedClasses()),
 	)
 }
+
+// AcceptStaticBaseline logs the baseline's service identity, scan
+// identity, chunk position, and class counts.
+func (s *LogSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
+	s.logger.Info("received static baseline",
+		"service", baseline.GetResource().GetServiceName(),
+		"instance", baseline.GetResource().GetServiceInstanceId(),
+		"scanned_at", baseline.GetScannedAt(),
+		"chunk", baseline.GetChunkIndex(),
+		"chunk_count", baseline.GetChunkCount(),
+		"declared_classes", len(baseline.GetDeclaredClasses()),
+		"statically_unsafe_classes", len(baseline.GetStaticallyUnsafeClasses()),
+		"unreadable_classes", len(baseline.GetUnreadableClasses()),
+		"unprobed_classes", len(baseline.GetUnprobedClasses()),
+	)
+}

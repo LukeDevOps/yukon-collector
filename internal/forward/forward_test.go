@@ -58,7 +58,7 @@ func mustNewSink(t *testing.T, cfg Config) *ForwardingSink {
 }
 
 func manifestWithService(name string) *yukonpb.ProbeManifest {
-	return &yukonpb.ProbeManifest{ServiceName: name}
+	return &yukonpb.ProbeManifest{ServiceName: name, ServiceInstanceId: "instance-1"}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
@@ -139,6 +139,48 @@ func TestForwardingSink_DeltaBatch_RelayedToBackendPath(t *testing.T) {
 	waitFor(t, time.Second, received.Load)
 	if gotPath != ingest.DeltaBatchPath {
 		t.Errorf("path = %q, want %q", gotPath, ingest.DeltaBatchPath)
+	}
+}
+
+func TestForwardingSink_StaticBaseline_RelayedToBackendPath(t *testing.T) {
+	var gotPath, gotContentType string
+	var gotBody []byte
+	var received atomic.Bool
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		received.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	sink := mustNewSink(t, testConfig(backend.URL))
+	defer sink.Shutdown(context.Background())
+
+	sent := &yukonpb.StaticBaseline{
+		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		ScannedAt:  1700000000,
+		ChunkIndex: 1,
+		ChunkCount: 2,
+	}
+	sink.AcceptStaticBaseline(sent)
+
+	waitFor(t, time.Second, received.Load)
+	if gotPath != ingest.StaticBaselinePath {
+		t.Errorf("path = %q, want %q", gotPath, ingest.StaticBaselinePath)
+	}
+	if gotContentType != "application/x-protobuf" {
+		t.Errorf("content-type = %q, want application/x-protobuf", gotContentType)
+	}
+
+	var got yukonpb.StaticBaseline
+	if err := proto.Unmarshal(gotBody, &got); err != nil {
+		t.Fatalf("unmarshal relayed body: %v", err)
+	}
+	if got.GetChunkIndex() != sent.GetChunkIndex() || got.GetChunkCount() != sent.GetChunkCount() || got.GetScannedAt() != sent.GetScannedAt() {
+		t.Errorf("relayed baseline = %v, want it to match %v", &got, sent)
 	}
 }
 
@@ -349,12 +391,19 @@ func TestForwardingSink_Shutdown_DrainsQueueWithOneAttemptEach(t *testing.T) {
 	}
 }
 
+// findKeysInDifferentShards returns two service names whose manifests
+// land on different shards, derived the same way AcceptManifest derives
+// them, so the isolation under test is the one that happens in
+// production.
 func findKeysInDifferentShards(t *testing.T, numShards int) (string, string) {
 	t.Helper()
 	candidates := []string{"svc-a", "svc-b", "svc-c", "svc-d", "svc-e", "svc-f", "svc-g", "svc-h"}
 	for i := range candidates {
 		for j := i + 1; j < len(candidates); j++ {
-			if shardIndex(candidates[i], numShards) != shardIndex(candidates[j], numShards) {
+			a, b := manifestWithService(candidates[i]), manifestWithService(candidates[j])
+			keyA := instanceKey(a.GetServiceName(), a.GetServiceInstanceId())
+			keyB := instanceKey(b.GetServiceName(), b.GetServiceInstanceId())
+			if shardIndex(keyA, numShards) != shardIndex(keyB, numShards) {
 				return candidates[i], candidates[j]
 			}
 		}

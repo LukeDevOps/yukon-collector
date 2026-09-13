@@ -49,8 +49,9 @@ const (
 type Config struct {
 	// URL is the backend's base URL, with an http or https scheme and a
 	// host. ForwardingSink posts the re-marshaled payload to
-	// URL+ingest.DeltaBatchPath and URL+ingest.ManifestPath. Trailing
-	// slashes are removed so the joined path has a single separator.
+	// URL+ingest.DeltaBatchPath, URL+ingest.ManifestPath, and
+	// URL+ingest.StaticBaselinePath. Trailing slashes are removed so the
+	// joined path has a single separator.
 	URL string
 
 	// AuthToken authenticates the collector to the backend, sent as
@@ -232,6 +233,14 @@ func validateURL(raw string) (string, error) {
 	return strings.TrimRight(raw, "/"), nil
 }
 
+// instanceKey builds the shard key every payload type is routed on:
+// service name and instance ID together. All three payloads are only
+// meaningful within one running instance, since class_id is assigned
+// per instance in load order.
+func instanceKey(service, instance string) string {
+	return service + "/" + instance
+}
+
 // AcceptDeltaBatch marshals batch and queues it on the shard for its
 // service instance. It returns without waiting for delivery.
 func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
@@ -241,12 +250,11 @@ func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
 		metrics.ForwardDropped.Inc("deltas", "marshal")
 		return
 	}
-	key := batch.GetResource().GetServiceName() + "/" + batch.GetResource().GetServiceInstanceId()
-	s.enqueue(queuedItem{key: key, path: ingest.DeltaBatchPath, body: body})
+	s.enqueue(queuedItem{key: instanceKey(batch.GetResource().GetServiceName(), batch.GetResource().GetServiceInstanceId()), path: ingest.DeltaBatchPath, body: body})
 }
 
 // AcceptManifest marshals manifest and queues it on the shard for its
-// service. It returns without waiting for delivery.
+// service instance. It returns without waiting for delivery.
 func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 	body, err := proto.Marshal(manifest)
 	if err != nil {
@@ -254,10 +262,19 @@ func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 		metrics.ForwardDropped.Inc("manifest", "marshal")
 		return
 	}
-	// ProbeManifest carries no instance ID: a manifest describes a
-	// service's probe set, not one running instance of it.
-	key := manifest.GetServiceName()
-	s.enqueue(queuedItem{key: key, path: ingest.ManifestPath, body: body})
+	s.enqueue(queuedItem{key: instanceKey(manifest.GetServiceName(), manifest.GetServiceInstanceId()), path: ingest.ManifestPath, body: body})
+}
+
+// AcceptStaticBaseline marshals baseline and queues it on the shard for
+// its service instance. It returns without waiting for delivery.
+func (s *ForwardingSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
+	body, err := proto.Marshal(baseline)
+	if err != nil {
+		s.cfg.Logger.Warn("dropping static baseline: marshal failed", "error", err)
+		metrics.ForwardDropped.Inc("static_baseline", "marshal")
+		return
+	}
+	s.enqueue(queuedItem{key: instanceKey(baseline.GetResource().GetServiceName(), baseline.GetResource().GetServiceInstanceId()), path: ingest.StaticBaselinePath, body: body})
 }
 
 func (s *ForwardingSink) enqueue(item queuedItem) {
