@@ -66,6 +66,10 @@ func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, &batch, "delta batch") {
 		return
 	}
+	if err := validateDeltaBatch(&batch); err != nil {
+		h.reject(w, "delta batch", err)
+		return
+	}
 	h.sink.AcceptDeltaBatch(&batch)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -75,8 +79,45 @@ func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, &manifest, "manifest") {
 		return
 	}
+	if err := validateManifest(&manifest); err != nil {
+		h.reject(w, "manifest", err)
+		return
+	}
 	h.sink.AcceptManifest(&manifest)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// validateDeltaBatch checks the fields a Sink needs to attribute the
+// batch. The agent always sends them, even on an empty heartbeat batch,
+// so a batch without them is a broken or foreign sender, not a quiet
+// instance.
+func validateDeltaBatch(batch *yukonpb.DeltaBatch) error {
+	res := batch.GetResource()
+	if res == nil {
+		return errors.New("missing resource")
+	}
+	if res.GetServiceName() == "" {
+		return errors.New("resource.service_name is empty")
+	}
+	if res.GetServiceInstanceId() == "" {
+		return errors.New("resource.service_instance_id is empty")
+	}
+	return nil
+}
+
+// validateManifest checks that the manifest names the service it
+// describes.
+func validateManifest(manifest *yukonpb.ProbeManifest) error {
+	if manifest.GetServiceName() == "" {
+		return errors.New("service_name is empty")
+	}
+	return nil
+}
+
+// reject answers a decoded but unusable payload with 400.
+func (h *Handler) reject(w http.ResponseWriter, what string, err error) {
+	h.logger.Warn("rejecting invalid "+what, "error", err)
+	http.Error(w, "invalid "+what+": "+err.Error(), http.StatusBadRequest)
 }
 
 // decode reads r's body into msg. It reports false after writing the

@@ -53,8 +53,9 @@ repo and is published to the Buf Schema Registry as
   as an ordinary Go module dependency. No local `.proto` copy or `protoc`
   step in this repo.
 - `internal/ingest.Handler` — decodes the two payload types above and hands
-  each to a `Sink`. Rejects malformed bodies with `400` before they reach
-  the sink; accepts valid ones with `202`.
+  each to a `Sink`. Rejects malformed bodies, and decoded ones missing
+  the service name or instance ID a backend needs to attribute them,
+  with `400` before they reach the sink; accepts valid ones with `202`.
 - `internal/ingest.Sink` — the seam a real backend implements. The
   collector has no storage of its own, so this interface is the entire
   contract between "decoded a payload" and "did something with it."

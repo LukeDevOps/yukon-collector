@@ -1,16 +1,39 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"golang.org/x/time/rate"
+	"google.golang.org/protobuf/proto"
+
+	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 )
+
+// deltaRequest builds a POST to the deltas route carrying the smallest
+// batch the handler accepts: a resource with a service name and instance
+// ID, and no deltas.
+func deltaRequest(t *testing.T, serverURL string) *http.Request {
+	t.Helper()
+	body, err := proto.Marshal(&yukonpb.DeltaBatch{
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+	})
+	if err != nil {
+		t.Fatalf("marshal batch: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/yukon/deltas", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	return req
+}
 
 // mustRegisterRoutes wires routes for a config the test expects to be valid.
 func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
@@ -28,12 +51,7 @@ func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/yukon/deltas", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Body = http.NoBody
-	req.Header.Set("Content-Type", "application/x-protobuf")
+	req := deltaRequest(t, server.URL)
 
 	resp, err := server.Client().Do(req)
 	if err != nil {
@@ -44,12 +62,7 @@ func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 		t.Fatalf("status without auth = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 
-	req2, err := http.NewRequest(http.MethodPost, server.URL+"/v1/yukon/deltas", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req2.Body = http.NoBody
-	req2.Header.Set("Content-Type", "application/x-protobuf")
+	req2 := deltaRequest(t, server.URL)
 	req2.Header.Set("Authorization", "Bearer s3cret")
 
 	resp2, err := server.Client().Do(req2)
@@ -68,14 +81,7 @@ func TestRegisterRoutes_NoAuthToken_IngestUnauthenticated(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/yukon/deltas", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Body = http.NoBody
-	req.Header.Set("Content-Type", "application/x-protobuf")
-
-	resp, err := server.Client().Do(req)
+	resp, err := server.Client().Do(deltaRequest(t, server.URL))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -103,14 +109,7 @@ func TestRegisterRoutes_Healthz_NeverRequiresAuth(t *testing.T) {
 
 func postDelta(t *testing.T, serverURL string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/yukon/deltas", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Body = http.NoBody
-	req.Header.Set("Content-Type", "application/x-protobuf")
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(deltaRequest(t, serverURL))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}

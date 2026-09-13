@@ -90,7 +90,7 @@ func TestHandleDeltaBatch_WrongContentType_Rejected(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service"}}
+	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}}
 	body, err := proto.Marshal(batch)
 	if err != nil {
 		t.Fatalf("marshal batch: %v", err)
@@ -250,5 +250,71 @@ func TestHandleDeltaBatch_ContentTypeWithParameters_Accepted(t *testing.T) {
 	}
 	if len(sink.deltaBatches) != 1 {
 		t.Fatalf("sink received %d batches, want 1", len(sink.deltaBatches))
+	}
+}
+
+func postProto(t *testing.T, url string, msg proto.Message) *http.Response {
+	t.Helper()
+	body, err := proto.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(url, "application/x-protobuf", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	return resp
+}
+
+func TestHandleDeltaBatch_MissingIdentity_RejectedWithoutReachingSink(t *testing.T) {
+	for name, batch := range map[string]*yukonpb.DeltaBatch{
+		"empty body":          {},
+		"no resource":         {Deltas: []*yukonpb.ProbeDelta{{ClassId: 1}}},
+		"no service name":     {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1"}},
+		"no service instance": {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := &fakeSink{}
+			server := newTestServer(sink)
+			defer server.Close()
+
+			resp := postProto(t, server.URL+"/v1/yukon/deltas", batch)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+			}
+			if len(sink.deltaBatches) != 0 {
+				t.Fatalf("sink received %d batches, want 0", len(sink.deltaBatches))
+			}
+		})
+	}
+}
+
+func TestHandleDeltaBatch_EmptyHeartbeatWithIdentity_Accepted(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	resp := postProto(t, server.URL+"/v1/yukon/deltas", &yukonpb.DeltaBatch{
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d (a heartbeat with no deltas is valid)", resp.StatusCode, http.StatusAccepted)
+	}
+}
+
+func TestHandleManifest_MissingServiceName_RejectedWithoutReachingSink(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	resp := postProto(t, server.URL+"/v1/yukon/manifest", &yukonpb.ProbeManifest{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	if len(sink.manifests) != 0 {
+		t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
 	}
 }
