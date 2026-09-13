@@ -58,15 +58,22 @@ repo and is published to the Buf Schema Registry as
 - `internal/ingest.Sink` — the seam a real backend implements. The
   collector has no storage of its own, so this interface is the entire
   contract between "decoded a payload" and "did something with it."
-  `LogSink` is the only implementation here: it just logs what it
-  receives, standing in for a real backend during development.
+  Two implementations live here: `LogSink`, which only logs what it
+  receives and stands in for a backend during development, and
+  `forward.ForwardingSink` below.
+- `internal/forward` — `ForwardingSink` relays each decoded payload to a
+  backend over the same protobuf-over-HTTP shape the collector accepts,
+  the way an OTel Collector exporter re-sends OTLP downstream. Payloads
+  are queued and sent by background workers, sharded by service identity
+  so one instance's failing backend calls can't hold up another's, with
+  time-bounded exponential backoff on `429`/`502`/`503`/`504`.
 - `internal/auth` — a shared-secret bearer-token check, wrapped around the
   ingest routes as HTTP middleware. Kept separate from `ingest.Handler` so
   the decode layer stays auth-agnostic.
 - `internal/ratelimit` — a per-client-IP token bucket, also wrapped around
   the ingest routes as HTTP middleware, checked before auth so a request
   flood is capped regardless of whether it carries a valid token.
-- `cmd/yukon-collector` — a minimal HTTP server wiring a `LogSink` into the
+- `cmd/yukon-collector` — a minimal HTTP server wiring the sink into the
   handler and listening on `:4319` (the agent's default
   `collectorEndpoint`), overridable via `YUKON_COLLECTOR_ADDR`.
 
@@ -80,12 +87,20 @@ locally is:
 YUKON_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/yukon-collector
 ```
 
-Listens on `:4319` by default. Point the yukon agent's
-`collectorEndpoint` at it, or send a payload by hand:
+Listens on `:4319` by default; set `YUKON_COLLECTOR_ADDR` to change that.
+Point the yukon agent's `collectorEndpoint` at it, or send a payload by
+hand. This posts a `DeltaBatch` for service `demo`, instance `i1`, with
+no probe deltas (the same shape the agent sends as an idle heartbeat):
 
 ```
-YUKON_COLLECTOR_ADDR=:4319 YUKON_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/yukon-collector
+printf '\x0a\x0a\x0a\x04demo\x1a\x02i1' | curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST http://localhost:4319/v1/yukon/deltas \
+  -H 'Content-Type: application/x-protobuf' --data-binary @-
 ```
+
+Expect `202`. Without forwarding configured (see
+[Forwarding](#forwarding)), the collector logs each payload it receives
+and does nothing else with it.
 
 ### Authentication
 
@@ -110,11 +125,12 @@ outside your machine), opt out explicitly:
 YUKON_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/yukon-collector
 ```
 
-Or as a container:
+Or as a container. The same fail-closed rule applies, so the token (or
+the explicit opt-out) has to be passed in:
 
 ```
 docker build -t yukon-collector .
-docker run --rm -p 4319:4319 yukon-collector
+docker run --rm -p 4319:4319 -e YUKON_COLLECTOR_AUTH_TOKEN=s3cret yukon-collector
 ```
 
 ### Rate limiting
@@ -133,6 +149,32 @@ never gated on auth.
 
 `GET /healthz` returns `200` once the server is up, for liveness/readiness
 probes.
+
+### Forwarding
+
+By default the collector only logs what it receives. Set
+`YUKON_COLLECTOR_FORWARD_URL` to the base URL of a backend and every
+decoded payload is relayed there instead, as a `POST` to the same
+`/v1/yukon/deltas` and `/v1/yukon/manifest` paths with the same
+`application/x-protobuf` body. `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN`, if
+set, is sent as a bearer token on those requests. It is a separate secret
+from `YUKON_COLLECTOR_AUTH_TOKEN`: the agent authenticates to the
+collector, the collector authenticates to the backend, and the two need
+not match.
+
+```
+YUKON_COLLECTOR_AUTH_TOKEN=s3cret \
+YUKON_COLLECTOR_FORWARD_URL=https://backend.example.com \
+YUKON_COLLECTOR_FORWARD_AUTH_TOKEN=backend-secret \
+go run ./cmd/yukon-collector
+```
+
+Forwarding is asynchronous. The agent gets its `202` as soon as the
+payload is decoded and queued; background workers deliver it, retrying
+`429`/`502`/`503`/`504` with exponential backoff for up to five minutes.
+Any other failure is logged and the payload dropped, as is a payload that
+arrives while its queue is full. On shutdown, queued payloads get one
+delivery attempt each within the shutdown deadline.
 
 ## Development
 

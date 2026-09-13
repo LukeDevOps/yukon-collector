@@ -1,6 +1,8 @@
 // Command yukon-collector is the ingest/decode layer for the yukon agent's
-// OTLP-style push export. It has no storage of its own; a real backend
-// implements ingest.Sink and is wired in here in place of LogSink.
+// OTLP-style push export. It has no storage of its own: decoded payloads
+// go to an ingest.Sink, either a forward.ForwardingSink that relays them
+// to a backend or, with no backend configured, a LogSink that only logs
+// them.
 package main
 
 import (
