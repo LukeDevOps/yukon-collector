@@ -144,6 +144,21 @@ requests/second with a burst of 20 by default, sized around the agent's
 YUKON_COLLECTOR_RATE_LIMIT_RPS=10 YUKON_COLLECTOR_RATE_LIMIT_BURST=50 go run ./cmd/yukon-collector
 ```
 
+A throttled request gets `429` with a `Retry-After` header.
+
+The limit is keyed on the connection's remote address. Behind a reverse
+proxy or load balancer every agent arrives from the proxy's address and
+they all share one bucket, so set `YUKON_COLLECTOR_CLIENT_IP_HEADER` to
+the header the proxy writes the real client address into
+(`X-Forwarded-For`, `X-Real-IP`, and so on). For a comma-separated list
+the last entry is used, since that is the one the nearest proxy wrote.
+The header is trusted as given: only set this when the collector cannot
+be reached except through that proxy.
+
+```
+YUKON_COLLECTOR_CLIENT_IP_HEADER=X-Forwarded-For go run ./cmd/yukon-collector
+```
+
 `/healthz` is never throttled, for the same liveness/readiness reason it's
 never gated on auth.
 

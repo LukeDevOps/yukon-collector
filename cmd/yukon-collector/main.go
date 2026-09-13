@@ -55,7 +55,11 @@ func main() {
 	}
 	var limiter *ratelimit.Limiter
 	if rps > 0 {
-		limiter = ratelimit.New(rps, burst)
+		var opts []ratelimit.Option
+		if header := os.Getenv("YUKON_COLLECTOR_CLIENT_IP_HEADER"); header != "" {
+			opts = append(opts, ratelimit.WithClientIPHeader(header))
+		}
+		limiter = ratelimit.New(rps, burst, opts...)
 		defer limiter.Stop()
 	}
 
