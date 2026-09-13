@@ -63,6 +63,9 @@ repo and is published to the Buf Schema Registry as
 - `internal/auth` — a shared-secret bearer-token check, wrapped around the
   ingest routes as HTTP middleware. Kept separate from `ingest.Handler` so
   the decode layer stays auth-agnostic.
+- `internal/ratelimit` — a per-client-IP token bucket, also wrapped around
+  the ingest routes as HTTP middleware, checked before auth so a request
+  flood is capped regardless of whether it carries a valid token.
 - `cmd/yukon-collector` — a minimal HTTP server wiring a `LogSink` into the
   handler and listening on `:4319` (the agent's default
   `collectorEndpoint`), overridable via `YUKON_COLLECTOR_ADDR`.
@@ -113,6 +116,20 @@ Or as a container:
 docker build -t yukon-collector .
 docker run --rm -p 4319:4319 yukon-collector
 ```
+
+### Rate limiting
+
+`/v1/yukon/deltas` and `/v1/yukon/manifest` are throttled per client IP: 5
+requests/second with a burst of 20 by default, sized around the agent's
+30-60s flush interval. Override with `YUKON_COLLECTOR_RATE_LIMIT_RPS` and
+`YUKON_COLLECTOR_RATE_LIMIT_BURST`, or set the rate to `0` to disable it.
+
+```
+YUKON_COLLECTOR_RATE_LIMIT_RPS=10 YUKON_COLLECTOR_RATE_LIMIT_BURST=50 go run ./cmd/yukon-collector
+```
+
+`/healthz` is never throttled, for the same liveness/readiness reason it's
+never gated on auth.
 
 `GET /healthz` returns `200` once the server is up, for liveness/readiness
 probes.
