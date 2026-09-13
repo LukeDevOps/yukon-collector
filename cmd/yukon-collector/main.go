@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -155,6 +156,9 @@ func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 		burst = parsed
 	}
 
+	if math.IsNaN(rps) || math.IsInf(rps, 0) {
+		return 0, 0, errors.New("YUKON_COLLECTOR_RATE_LIMIT_RPS must be a finite number")
+	}
 	if rps < 0 {
 		return 0, 0, errors.New("YUKON_COLLECTOR_RATE_LIMIT_RPS must not be negative")
 	}

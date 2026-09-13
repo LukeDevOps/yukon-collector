@@ -120,3 +120,11 @@ func TestResolveRateLimit_EnabledWithZeroBurst_Errors(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+func TestResolveRateLimit_NonFiniteRPS_Errors(t *testing.T) {
+	for _, raw := range []string{"NaN", "Inf", "+Inf", "-Inf"} {
+		if _, _, err := resolveRateLimit(raw, ""); err == nil {
+			t.Errorf("rps %q: expected an error, got nil", raw)
+		}
+	}
+}
