@@ -44,6 +44,16 @@ func testConfig(url string) Config {
 	}
 }
 
+// mustNewSink constructs a sink for a config the test expects to be valid.
+func mustNewSink(t *testing.T, cfg Config) *ForwardingSink {
+	t.Helper()
+	sink, err := NewForwardingSink(cfg)
+	if err != nil {
+		t.Fatalf("NewForwardingSink: %v", err)
+	}
+	return sink
+}
+
 func manifestWithService(name string) *yukonpb.ProbeManifest {
 	return &yukonpb.ProbeManifest{ServiceName: name}
 }
@@ -79,7 +89,7 @@ func TestForwardingSink_Manifest_RelayedToBackendPath(t *testing.T) {
 
 	cfg := testConfig(backend.URL)
 	cfg.AuthToken = "backend-secret"
-	sink := NewForwardingSink(cfg)
+	sink := mustNewSink(t, cfg)
 	defer sink.Shutdown(context.Background())
 
 	sink.AcceptManifest(manifestWithService("demo-service"))
@@ -116,7 +126,7 @@ func TestForwardingSink_DeltaBatch_RelayedToBackendPath(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	sink := NewForwardingSink(testConfig(backend.URL))
+	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
 	sink.AcceptDeltaBatch(&yukonpb.DeltaBatch{
@@ -141,7 +151,7 @@ func TestForwardingSink_RetryableStatus_RetriesThenSucceeds(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	sink := NewForwardingSink(testConfig(backend.URL))
+	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
 	sink.AcceptManifest(manifestWithService("demo-service"))
@@ -163,7 +173,7 @@ func TestForwardingSink_PermanentStatus_DroppedWithoutRetry(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	sink := NewForwardingSink(testConfig(backend.URL))
+	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
 	sink.AcceptManifest(manifestWithService("demo-service"))
@@ -184,7 +194,7 @@ func TestForwardingSink_RetryBudgetExhausted_StopsRetrying(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	sink := NewForwardingSink(testConfig(backend.URL))
+	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
 	sink.AcceptManifest(manifestWithService("demo-service"))
@@ -219,7 +229,7 @@ func TestForwardingSink_QueueFull_DropsNewestWithoutBlocking(t *testing.T) {
 	cfg := testConfig(backend.URL)
 	cfg.QueueSize = 1
 	cfg.RequestTimeout = time.Hour // don't let the timeout unblock the worker under test
-	sink := NewForwardingSink(cfg)
+	sink := mustNewSink(t, cfg)
 	t.Cleanup(func() {
 		close(blockBackend) // unblock the handler before Shutdown waits on the worker
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -270,7 +280,7 @@ func TestForwardingSink_DifferentShards_OneStuckDoesNotBlockAnother(t *testing.T
 	cfg := testConfig(backend.URL)
 	cfg.Shards = numShards
 	cfg.RequestTimeout = time.Hour
-	sink := NewForwardingSink(cfg)
+	sink := mustNewSink(t, cfg)
 	t.Cleanup(func() {
 		close(blockA)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -299,7 +309,7 @@ func TestForwardingSink_Shutdown_DrainsQueueWithOneAttemptEach(t *testing.T) {
 	cfg.QueueSize = 4
 	cfg.RequestTimeout = 5 * time.Second
 	cfg.RetryMaxElapsedTime = time.Hour // would retry effectively forever if not for Shutdown
-	sink := NewForwardingSink(cfg)
+	sink := mustNewSink(t, cfg)
 
 	sink.AcceptManifest(manifestWithService("svc-1")) // picked up by the worker, blocks in the handler
 	waitFor(t, time.Second, func() bool { return attempts.Load() == 1 })
@@ -370,7 +380,7 @@ func TestForwardingSink_Shutdown_CancelsInFlightAttemptAtDeadline(t *testing.T) 
 
 	cfg := testConfig(backend.URL)
 	cfg.RequestTimeout = time.Hour // only the shutdown deadline may end the attempt
-	sink := NewForwardingSink(cfg)
+	sink := mustNewSink(t, cfg)
 
 	sink.AcceptManifest(manifestWithService("svc"))
 	select {
@@ -395,7 +405,37 @@ func TestForwardingSink_Shutdown_SecondCallIsANoOp(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	sink := NewForwardingSink(testConfig(backend.URL))
+	sink := mustNewSink(t, testConfig(backend.URL))
 	sink.Shutdown(context.Background())
 	sink.Shutdown(context.Background()) // must not panic on the closed stop channel
+}
+
+func TestNewForwardingSink_InvalidURL_ReturnsError(t *testing.T) {
+	for _, raw := range []string{"", "backend.example.com", "ftp://backend.example.com", "http://", "://bad"} {
+		cfg := testConfig(raw)
+		if _, err := NewForwardingSink(cfg); err == nil {
+			t.Errorf("URL %q: expected an error, got nil", raw)
+		}
+	}
+}
+
+func TestForwardingSink_TrailingSlashURL_PostsToCleanPath(t *testing.T) {
+	var gotPath string
+	var received atomic.Bool
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		received.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	sink := mustNewSink(t, testConfig(backend.URL+"/"))
+	defer sink.Shutdown(context.Background())
+
+	sink.AcceptManifest(manifestWithService("svc"))
+	waitFor(t, time.Second, received.Load)
+	if gotPath != ingest.ManifestPath {
+		t.Fatalf("path = %q, want %q (no doubled slash from the trailing slash)", gotPath, ingest.ManifestPath)
+	}
 }

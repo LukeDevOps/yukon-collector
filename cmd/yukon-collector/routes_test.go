@@ -8,12 +8,23 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 )
 
+// mustRegisterRoutes wires routes for a config the test expects to be valid.
+func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
+	t.Helper()
+	fwd, err := registerRoutes(mux, nil, authToken, limiter, forwardURL, forwardAuthToken)
+	if err != nil {
+		t.Fatalf("registerRoutes: %v", err)
+	}
+	return fwd
+}
+
 func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "s3cret", nil, "", "")
+	mustRegisterRoutes(t, mux, "s3cret", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -53,7 +64,7 @@ func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 
 func TestRegisterRoutes_NoAuthToken_IngestUnauthenticated(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", nil, "", "")
+	mustRegisterRoutes(t, mux, "", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -76,7 +87,7 @@ func TestRegisterRoutes_NoAuthToken_IngestUnauthenticated(t *testing.T) {
 
 func TestRegisterRoutes_Healthz_NeverRequiresAuth(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "s3cret", nil, "", "")
+	mustRegisterRoutes(t, mux, "s3cret", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -111,7 +122,7 @@ func TestRegisterRoutes_LimiterSet_ThrottlesIngestRoutesOverBurst(t *testing.T) 
 	defer limiter.Stop()
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", limiter, "", "")
+	mustRegisterRoutes(t, mux, "", limiter, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -133,7 +144,7 @@ func TestRegisterRoutes_LimiterSet_HealthzNeverThrottled(t *testing.T) {
 	defer limiter.Stop()
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", limiter, "", "")
+	mustRegisterRoutes(t, mux, "", limiter, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -151,7 +162,7 @@ func TestRegisterRoutes_LimiterSet_HealthzNeverThrottled(t *testing.T) {
 
 func TestRegisterRoutes_NoLimiter_IngestUnthrottled(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", nil, "", "")
+	mustRegisterRoutes(t, mux, "", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -166,7 +177,7 @@ func TestRegisterRoutes_NoLimiter_IngestUnthrottled(t *testing.T) {
 
 func TestRegisterRoutes_NoForwardURL_ReturnsNilForwardingSink(t *testing.T) {
 	mux := http.NewServeMux()
-	fwd := registerRoutes(mux, nil, "", nil, "", "")
+	fwd := mustRegisterRoutes(t, mux, "", nil, "", "")
 	if fwd != nil {
 		t.Fatalf("forwarding sink = %v, want nil when YUKON_COLLECTOR_FORWARD_URL is unset", fwd)
 	}
@@ -179,7 +190,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 	defer backend.Close()
 
 	mux := http.NewServeMux()
-	fwd := registerRoutes(mux, nil, "", nil, backend.URL, "backend-secret")
+	fwd := mustRegisterRoutes(t, mux, "", nil, backend.URL, "backend-secret")
 	if fwd == nil {
 		t.Fatal("forwarding sink = nil, want non-nil when YUKON_COLLECTOR_FORWARD_URL is set")
 	}
@@ -192,5 +203,12 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+}
+
+func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
+	mux := http.NewServeMux()
+	if _, err := registerRoutes(mux, nil, "", nil, "not a url", ""); err == nil {
+		t.Fatal("expected an error for an unusable forward URL, got nil")
 	}
 }

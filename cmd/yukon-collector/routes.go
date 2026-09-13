@@ -23,8 +23,9 @@ import (
 // the caller can Shutdown it on graceful shutdown. An empty forwardURL
 // falls back to logging payloads instead of forwarding them, so
 // local/dev/CI runs keep working with no backend at all; registerRoutes
-// then returns a nil *forward.ForwardingSink.
-func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
+// then returns a nil *forward.ForwardingSink. A forwardURL that cannot
+// be used is returned as an error.
+func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) (*forward.ForwardingSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -32,7 +33,11 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	var sink ingest.Sink
 	var fwd *forward.ForwardingSink
 	if forwardURL != "" {
-		fwd = forward.NewForwardingSink(forward.Config{URL: forwardURL, AuthToken: forwardAuthToken, Logger: logger})
+		var err error
+		fwd, err = forward.NewForwardingSink(forward.Config{URL: forwardURL, AuthToken: forwardAuthToken, Logger: logger})
+		if err != nil {
+			return nil, err
+		}
 		sink = fwd
 	} else {
 		logger.Warn("YUKON_COLLECTOR_FORWARD_URL not set; ingest payloads are only logged, not forwarded")
@@ -60,5 +65,5 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 		w.WriteHeader(http.StatusOK)
 	})
 
-	return fwd
+	return fwd, nil
 }

@@ -67,7 +67,11 @@ func main() {
 	forwardAuthToken := os.Getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN")
 
 	mux := http.NewServeMux()
-	fwd := registerRoutes(mux, logger, authToken, limiter, forwardURL, forwardAuthToken)
+	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardURL, forwardAuthToken)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
 
 	srv := &http.Server{
 		Addr:              addr,

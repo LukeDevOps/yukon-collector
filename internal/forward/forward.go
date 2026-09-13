@@ -8,11 +8,14 @@ package forward
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,8 +41,10 @@ const (
 // falls back to a default matched to the OTLP HTTP exporter's own
 // defaults when left zero.
 type Config struct {
-	// URL is the backend's base URL. ForwardingSink posts the re-marshaled
-	// payload to URL+ingest.DeltaBatchPath and URL+ingest.ManifestPath.
+	// URL is the backend's base URL, with an http or https scheme and a
+	// host. ForwardingSink posts the re-marshaled payload to
+	// URL+ingest.DeltaBatchPath and URL+ingest.ManifestPath. Trailing
+	// slashes are removed so the joined path has a single separator.
 	URL string
 
 	// AuthToken authenticates the collector to the backend, sent as
@@ -151,9 +156,21 @@ type ForwardingSink struct {
 var _ ingest.Sink = (*ForwardingSink)(nil)
 
 // NewForwardingSink starts cfg.Shards worker goroutines and returns a
-// ready-to-use ForwardingSink. Call Shutdown to drain and stop them.
-func NewForwardingSink(cfg Config) *ForwardingSink {
+// ready-to-use ForwardingSink. Call Shutdown to drain and stop them. It
+// returns an error for a cfg.URL that could never reach a backend, so a
+// bad setting stops the collector at startup rather than dropping every
+// payload as a permanent failure.
+func NewForwardingSink(cfg Config) (*ForwardingSink, error) {
 	cfg = cfg.withDefaults()
+
+	baseURL, err := validateURL(cfg.URL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.URL = baseURL
+	if strings.HasPrefix(cfg.URL, "http://") && cfg.AuthToken != "" {
+		cfg.Logger.Warn("forward URL uses plain http; the backend auth token is sent unencrypted", "url", cfg.URL)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &ForwardingSink{
@@ -169,7 +186,26 @@ func NewForwardingSink(cfg Config) *ForwardingSink {
 		s.wg.Add(1)
 		go s.runShard(sh)
 	}
-	return s
+	return s, nil
+}
+
+// validateURL checks that raw is an absolute http or https URL with a
+// host, and returns it with any trailing slashes removed.
+func validateURL(raw string) (string, error) {
+	if raw == "" {
+		return "", errors.New("forward URL is empty")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("forward URL %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("forward URL %q: scheme must be http or https", raw)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("forward URL %q: missing host", raw)
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
