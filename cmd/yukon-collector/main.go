@@ -57,8 +57,11 @@ func main() {
 		defer limiter.Stop()
 	}
 
+	forwardURL := os.Getenv("YUKON_COLLECTOR_FORWARD_URL")
+	forwardAuthToken := os.Getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN")
+
 	mux := http.NewServeMux()
-	registerRoutes(mux, logger, authToken, limiter)
+	fwd := registerRoutes(mux, logger, authToken, limiter, forwardURL, forwardAuthToken)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -90,8 +93,12 @@ func main() {
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("graceful shutdown failed", "error", err)
+		srvErr := srv.Shutdown(shutdownCtx)
+		if fwd != nil {
+			fwd.Shutdown(shutdownCtx)
+		}
+		if srvErr != nil {
+			logger.Error("graceful shutdown failed", "error", srvErr)
 			os.Exit(1)
 		}
 	}

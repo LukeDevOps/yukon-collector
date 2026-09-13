@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/LukeDevOps/yukon-collector/internal/auth"
+	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/ingest"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 )
@@ -16,11 +17,27 @@ import (
 // flood is capped regardless of whether it carries a valid token.
 // /healthz stays open, unauthenticated and unthrottled, for
 // liveness/readiness probes.
-func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter) {
+//
+// When forwardURL is non-empty, ingested payloads are relayed to that
+// backend via a forward.ForwardingSink, which registerRoutes returns so
+// the caller can Shutdown it on graceful shutdown. An empty forwardURL
+// falls back to logging payloads instead of forwarding them, so
+// local/dev/CI runs keep working with no backend at all; registerRoutes
+// then returns a nil *forward.ForwardingSink.
+func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	sink := ingest.NewLogSink(logger)
+
+	var sink ingest.Sink
+	var fwd *forward.ForwardingSink
+	if forwardURL != "" {
+		fwd = forward.NewForwardingSink(forward.Config{URL: forwardURL, AuthToken: forwardAuthToken, Logger: logger})
+		sink = fwd
+	} else {
+		logger.Warn("YUKON_COLLECTOR_FORWARD_URL not set; ingest payloads are only logged, not forwarded")
+		sink = ingest.NewLogSink(logger)
+	}
 	handler := ingest.NewHandler(sink, logger)
 
 	ingestMux := http.NewServeMux()
@@ -42,4 +59,6 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+
+	return fwd
 }

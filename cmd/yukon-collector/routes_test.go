@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "s3cret", nil)
+	registerRoutes(mux, nil, "s3cret", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -52,7 +53,7 @@ func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 
 func TestRegisterRoutes_NoAuthToken_IngestUnauthenticated(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", nil)
+	registerRoutes(mux, nil, "", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -75,7 +76,7 @@ func TestRegisterRoutes_NoAuthToken_IngestUnauthenticated(t *testing.T) {
 
 func TestRegisterRoutes_Healthz_NeverRequiresAuth(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "s3cret", nil)
+	registerRoutes(mux, nil, "s3cret", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -110,7 +111,7 @@ func TestRegisterRoutes_LimiterSet_ThrottlesIngestRoutesOverBurst(t *testing.T) 
 	defer limiter.Stop()
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", limiter)
+	registerRoutes(mux, nil, "", limiter, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -132,7 +133,7 @@ func TestRegisterRoutes_LimiterSet_HealthzNeverThrottled(t *testing.T) {
 	defer limiter.Stop()
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", limiter)
+	registerRoutes(mux, nil, "", limiter, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -150,7 +151,7 @@ func TestRegisterRoutes_LimiterSet_HealthzNeverThrottled(t *testing.T) {
 
 func TestRegisterRoutes_NoLimiter_IngestUnthrottled(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, "", nil)
+	registerRoutes(mux, nil, "", nil, "", "")
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -160,5 +161,36 @@ func TestRegisterRoutes_NoLimiter_IngestUnthrottled(t *testing.T) {
 		if resp.StatusCode != http.StatusAccepted {
 			t.Fatalf("request %d: status = %d, want %d", i, resp.StatusCode, http.StatusAccepted)
 		}
+	}
+}
+
+func TestRegisterRoutes_NoForwardURL_ReturnsNilForwardingSink(t *testing.T) {
+	mux := http.NewServeMux()
+	fwd := registerRoutes(mux, nil, "", nil, "", "")
+	if fwd != nil {
+		t.Fatalf("forwarding sink = %v, want nil when YUKON_COLLECTOR_FORWARD_URL is unset", fwd)
+	}
+}
+
+func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedStatus(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	mux := http.NewServeMux()
+	fwd := registerRoutes(mux, nil, "", nil, backend.URL, "backend-secret")
+	if fwd == nil {
+		t.Fatal("forwarding sink = nil, want non-nil when YUKON_COLLECTOR_FORWARD_URL is set")
+	}
+	defer fwd.Shutdown(context.Background())
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp := postDelta(t, server.URL)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
 	}
 }

@@ -25,6 +25,15 @@ type Sink interface {
 // bad or hostile sender, not to fit any expected payload size.
 const maxBodyBytes = 4 << 20 // 4 MiB
 
+// DeltaBatchPath and ManifestPath are the agent-facing ingest routes. A
+// Sink that relays payloads onward (see forward.ForwardingSink) posts to
+// the same paths on the backend, so both sides share these constants
+// instead of each holding its own copy of the literal.
+const (
+	DeltaBatchPath = "/v1/yukon/deltas"
+	ManifestPath   = "/v1/yukon/manifest"
+)
+
 // Handler implements the agent-facing HTTP surface described in the yukon
 // agent's "Transport" design: one POST per flush interval, body is a
 // serialized protobuf message, no gRPC.
@@ -44,8 +53,8 @@ func NewHandler(sink Sink, logger *slog.Logger) *Handler {
 // HttpOtlpStyleExporter posts to: {endpoint}/v1/yukon/deltas and
 // {endpoint}/v1/yukon/manifest.
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/yukon/deltas", h.handleDeltaBatch)
-	mux.HandleFunc("POST /v1/yukon/manifest", h.handleManifest)
+	mux.HandleFunc("POST "+DeltaBatchPath, h.handleDeltaBatch)
+	mux.HandleFunc("POST "+ManifestPath, h.handleManifest)
 }
 
 func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
