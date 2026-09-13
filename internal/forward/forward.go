@@ -232,6 +232,8 @@ func validateURL(raw string) (string, error) {
 	return strings.TrimRight(raw, "/"), nil
 }
 
+// AcceptDeltaBatch marshals batch and queues it on the shard for its
+// service instance. It returns without waiting for delivery.
 func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
 	body, err := proto.Marshal(batch)
 	if err != nil {
@@ -243,6 +245,8 @@ func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
 	s.enqueue(queuedItem{key: key, path: ingest.DeltaBatchPath, body: body})
 }
 
+// AcceptManifest marshals manifest and queues it on the shard for its
+// service. It returns without waiting for delivery.
 func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 	body, err := proto.Marshal(manifest)
 	if err != nil {

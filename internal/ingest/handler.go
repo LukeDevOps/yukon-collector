@@ -57,6 +57,8 @@ type Handler struct {
 	logger *slog.Logger
 }
 
+// NewHandler returns a Handler that passes decoded payloads to sink and
+// logs to logger, or slog.Default() when logger is nil.
 func NewHandler(sink Sink, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()

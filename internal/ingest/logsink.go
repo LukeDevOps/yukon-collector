@@ -12,6 +12,8 @@ type LogSink struct {
 	logger *slog.Logger
 }
 
+// NewLogSink returns a LogSink writing to logger, or slog.Default() when
+// logger is nil.
 func NewLogSink(logger *slog.Logger) *LogSink {
 	if logger == nil {
 		logger = slog.Default()
@@ -19,6 +21,7 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 	return &LogSink{logger: logger}
 }
 
+// AcceptDeltaBatch logs the batch's service identity and delta count.
 func (s *LogSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
 	s.logger.Info("received delta batch",
 		"service", batch.GetResource().GetServiceName(),
@@ -27,6 +30,7 @@ func (s *LogSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
 	)
 }
 
+// AcceptManifest logs the manifest's service name and probe counts.
 func (s *LogSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
 	s.logger.Info("received probe manifest",
 		"service", manifest.GetServiceName(),
