@@ -2,6 +2,8 @@ module github.com/LukeDevOps/yukon-collector
 
 go 1.26.0
 
+toolchain go1.26.6
+
 require google.golang.org/protobuf v1.36.12
 
 require buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260913144019-6262779e06c8.2
