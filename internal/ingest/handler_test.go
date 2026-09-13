@@ -41,7 +41,7 @@ func TestHandleDeltaBatch_ValidPayload_ReachesSink(t *testing.T) {
 			ServiceInstanceId: "instance-1",
 		},
 		Deltas: []*yukonpb.ProbeDelta{
-			{ClassId: 1, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, HitsSinceLastFlush: 5},
+			{ClassId: 1, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, HitsTotal: 5},
 		},
 	}
 	body, err := proto.Marshal(batch)

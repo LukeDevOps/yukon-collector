@@ -4,6 +4,6 @@ go 1.26.0
 
 require google.golang.org/protobuf v1.36.12
 
-require buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260912220456-8355d93ee911.2
+require buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260913144019-6262779e06c8.2
 
 require golang.org/x/time v0.16.0
