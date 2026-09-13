@@ -58,18 +58,21 @@ repo and is published to the Buf Schema Registry as
   for the yukon wire schema, generated remotely by the BSR and pulled in
   as an ordinary Go module dependency. No local `.proto` copy or `protoc`
   step in this repo.
-- `internal/ingest.Handler` — decodes the three payload types above and
+- `ingest.Handler` — decodes the three payload types above and
   hands each to a `Sink`. Rejects malformed bodies, and decoded ones
   missing the service name or instance ID a backend needs to attribute
   them, with `400` before they reach the sink; accepts valid ones with
   `202`. A manifest is rejected without its instance ID too, since
   `class_id` is only meaningful within one running instance.
-- `internal/ingest.Sink` — the seam a real backend implements. The
+- `ingest.Sink` — the seam a real backend implements. The
   collector has no storage of its own, so this interface is the entire
   contract between "decoded a payload" and "did something with it."
   Two implementations live here: `LogSink`, which only logs what it
   receives and stands in for a backend during development, and
-  `forward.ForwardingSink` below.
+  `forward.ForwardingSink` below. `ingest` and `metrics` are importable
+  packages, not `internal`, so a backend written in Go can embed the same
+  `Handler` and implement `Sink` itself; the rest of this repo stays
+  internal.
 - `internal/forward` — `ForwardingSink` relays each decoded payload to a
   backend over the same protobuf-over-HTTP shape the collector accepts,
   the way an OTel Collector exporter re-sends OTLP downstream. Payloads
@@ -82,7 +85,7 @@ repo and is published to the Buf Schema Registry as
 - `internal/ratelimit` — a per-client-IP token bucket, also wrapped around
   the ingest routes as HTTP middleware, checked before auth so a request
   flood is capped regardless of whether it carries a valid token.
-- `internal/metrics` — a handful of counters served at `GET /metrics` in
+- `metrics` — a handful of counters served at `GET /metrics` in
   the Prometheus text format, with no client library dependency.
 - `cmd/yukon-collector` — a minimal HTTP server wiring the sink into the
   handler and listening on `:4319` (the agent's default
@@ -192,7 +195,7 @@ probes.
 | Counter | Labels | Meaning |
 | --- | --- | --- |
 | `yukon_collector_ingest_accepted_total` | `payload` | Decoded, valid, handed to the sink |
-| `yukon_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before the sink: `content_type`, `too_large`, `read`, `malformed`, `invalid` |
+| `yukon_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before or by the sink: `content_type`, `too_large`, `read`, `malformed`, `invalid`, `sink` (the sink refused the payload; the response was `503`) |
 | `yukon_collector_auth_rejected_total` | | 401 responses |
 | `yukon_collector_rate_limited_total` | | 429 responses |
 | `yukon_collector_forward_delivered_total` | `payload` | Backend accepted the payload |

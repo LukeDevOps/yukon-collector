@@ -17,8 +17,8 @@ import (
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
-	"github.com/LukeDevOps/yukon-collector/internal/ingest"
-	"github.com/LukeDevOps/yukon-collector/internal/metrics"
+	"github.com/LukeDevOps/yukon-collector/ingest"
+	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
 // discardLogger keeps test output free of expected Warn lines (queue-full,
@@ -95,7 +95,7 @@ func TestForwardingSink_Manifest_RelayedToBackendPath(t *testing.T) {
 	sink := mustNewSink(t, cfg)
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(manifestWithService("demo-service"))
+	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
 
 	waitFor(t, time.Second, received.Load)
 
@@ -132,7 +132,7 @@ func TestForwardingSink_DeltaBatch_RelayedToBackendPath(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptDeltaBatch(&yukonpb.DeltaBatch{
+	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{
 		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
 	})
 
@@ -165,7 +165,7 @@ func TestForwardingSink_StaticBaseline_RelayedToBackendPath(t *testing.T) {
 		ChunkIndex: 1,
 		ChunkCount: 2,
 	}
-	sink.AcceptStaticBaseline(sent)
+	sink.AcceptStaticBaseline(context.Background(), sent)
 
 	waitFor(t, time.Second, received.Load)
 	if gotPath != ingest.StaticBaselinePath {
@@ -199,7 +199,7 @@ func TestForwardingSink_RetryableStatus_RetriesThenSucceeds(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(manifestWithService("demo-service"))
+	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
 
 	waitFor(t, time.Second, func() bool { return attempts.Load() == 3 })
 	// Give a moment to confirm no further attempts happen after success.
@@ -221,7 +221,7 @@ func TestForwardingSink_PermanentStatus_DroppedWithoutRetry(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(manifestWithService("demo-service"))
+	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
 
 	waitFor(t, time.Second, func() bool { return attempts.Load() == 1 })
 	time.Sleep(50 * time.Millisecond)
@@ -242,7 +242,7 @@ func TestForwardingSink_RetryBudgetExhausted_StopsRetrying(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(manifestWithService("demo-service"))
+	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
 
 	// RetryMaxElapsedTime is 200ms with a 5ms initial interval: the retry
 	// loop gives up well within a second. Confirm it stops growing after
@@ -287,9 +287,9 @@ func TestForwardingSink_QueueFull_DropsNewestWithoutBlocking(t *testing.T) {
 	// the queue, item 3 finds the queue full and must be dropped.
 	done := make(chan struct{})
 	go func() {
-		sink.AcceptManifest(manifestWithService("svc"))
-		sink.AcceptManifest(manifestWithService("svc"))
-		sink.AcceptManifest(manifestWithService("svc"))
+		sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+		sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+		sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 		close(done)
 	}()
 
@@ -333,8 +333,8 @@ func TestForwardingSink_DifferentShards_OneStuckDoesNotBlockAnother(t *testing.T
 		sink.Shutdown(ctx)
 	})
 
-	sink.AcceptManifest(manifestWithService(keyA))
-	sink.AcceptManifest(manifestWithService(keyB))
+	sink.AcceptManifest(context.Background(), manifestWithService(keyA))
+	sink.AcceptManifest(context.Background(), manifestWithService(keyB))
 
 	waitFor(t, time.Second, bReceived.Load)
 }
@@ -356,10 +356,10 @@ func TestForwardingSink_Shutdown_DrainsQueueWithOneAttemptEach(t *testing.T) {
 	cfg.RetryMaxElapsedTime = time.Hour // would retry effectively forever if not for Shutdown
 	sink := mustNewSink(t, cfg)
 
-	sink.AcceptManifest(manifestWithService("svc-1")) // picked up by the worker, blocks in the handler
+	sink.AcceptManifest(context.Background(), manifestWithService("svc-1")) // picked up by the worker, blocks in the handler
 	waitFor(t, time.Second, func() bool { return attempts.Load() == 1 })
-	sink.AcceptManifest(manifestWithService("svc-2")) // sits queued behind it
-	sink.AcceptManifest(manifestWithService("svc-3")) // sits queued behind it
+	sink.AcceptManifest(context.Background(), manifestWithService("svc-2")) // sits queued behind it
+	sink.AcceptManifest(context.Background(), manifestWithService("svc-3")) // sits queued behind it
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -434,7 +434,7 @@ func TestForwardingSink_Shutdown_CancelsInFlightAttemptAtDeadline(t *testing.T) 
 	cfg.RequestTimeout = time.Hour // only the shutdown deadline may end the attempt
 	sink := mustNewSink(t, cfg)
 
-	sink.AcceptManifest(manifestWithService("svc"))
+	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 	select {
 	case <-handlerEntered:
 	case <-time.After(time.Second):
@@ -485,7 +485,7 @@ func TestForwardingSink_TrailingSlashURL_PostsToCleanPath(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL+"/"))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(manifestWithService("svc"))
+	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 	waitFor(t, time.Second, received.Load)
 	if gotPath != ingest.ManifestPath {
 		t.Fatalf("path = %q, want %q (no doubled slash from the trailing slash)", gotPath, ingest.ManifestPath)
@@ -514,7 +514,7 @@ func TestForwardingSink_RetryAfterHeader_DelaysNextAttempt(t *testing.T) {
 	sink := mustNewSink(t, cfg)
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(manifestWithService("svc"))
+	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 	waitFor(t, 3*time.Second, func() bool { return attempts.Load() == 2 })
 
 	// The backoff alone would retry within tens of milliseconds; the
@@ -535,7 +535,7 @@ func TestForwardingSink_DropLog_NamesTheService(t *testing.T) {
 	cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	sink := mustNewSink(t, cfg)
 
-	sink.AcceptDeltaBatch(&yukonpb.DeltaBatch{
+	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{
 		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
 	})
 	sink.Shutdown(context.Background())
@@ -575,7 +575,7 @@ func TestForwardingSink_LargeResponseBody_DoesNotBlockDelivery(t *testing.T) {
 	defer backend.Close()
 
 	sink := mustNewSink(t, testConfig(backend.URL))
-	sink.AcceptManifest(manifestWithService("svc"))
+	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 	waitFor(t, time.Second, received.Load)
 
 	done := make(chan struct{})
@@ -607,7 +607,7 @@ func TestForwardingSink_AcceptAfterShutdown_DroppedWithoutBlocking(t *testing.T)
 	before := metrics.ForwardDropped.Value("manifest", "shutting_down")
 	done := make(chan struct{})
 	go func() {
-		sink.AcceptManifest(manifestWithService("svc"))
+		sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 		close(done)
 	}()
 	select {

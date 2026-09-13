@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
-	"github.com/LukeDevOps/yukon-collector/internal/ingest"
+	"github.com/LukeDevOps/yukon-collector/ingest"
 )
 
 // captureSink is an ingest.Sink that records what it receives, standing in
@@ -29,22 +30,25 @@ type captureSink struct {
 	baselines    []*yukonpb.StaticBaseline
 }
 
-func (c *captureSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
+func (c *captureSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deltaBatches = append(c.deltaBatches, batch)
+	return nil
 }
 
-func (c *captureSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
+func (c *captureSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.manifests = append(c.manifests, manifest)
+	return nil
 }
 
-func (c *captureSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
+func (c *captureSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.baselines = append(c.baselines, baseline)
+	return nil
 }
 
 func (c *captureSink) deltaBatchCount() int {

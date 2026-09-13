@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"log/slog"
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
@@ -21,27 +22,31 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 	return &LogSink{logger: logger}
 }
 
-// AcceptDeltaBatch logs the batch's service identity and delta count.
-func (s *LogSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
+// AcceptDeltaBatch logs the batch's service identity and delta count. It
+// never fails.
+func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"service", batch.GetResource().GetServiceName(),
 		"instance", batch.GetResource().GetServiceInstanceId(),
 		"deltas", len(batch.GetDeltas()),
 	)
+	return nil
 }
 
-// AcceptManifest logs the manifest's service name and probe counts.
-func (s *LogSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
+// AcceptManifest logs the manifest's service name and probe counts. It
+// never fails.
+func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"service", manifest.GetServiceName(),
 		"probes", len(manifest.GetProbes()),
 		"skipped_classes", len(manifest.GetSkippedClasses()),
 	)
+	return nil
 }
 
 // AcceptStaticBaseline logs the baseline's service identity, scan
-// identity, chunk position, and class counts.
-func (s *LogSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
+// identity, chunk position, and class counts. It never fails.
+func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
 	s.logger.Info("received static baseline",
 		"service", baseline.GetResource().GetServiceName(),
 		"instance", baseline.GetResource().GetServiceInstanceId(),
@@ -53,4 +58,5 @@ func (s *LogSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
 		"unreadable_classes", len(baseline.GetUnreadableClasses()),
 		"unprobed_classes", len(baseline.GetUnprobedClasses()),
 	)
+	return nil
 }

@@ -24,8 +24,8 @@ import (
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
-	"github.com/LukeDevOps/yukon-collector/internal/ingest"
-	"github.com/LukeDevOps/yukon-collector/internal/metrics"
+	"github.com/LukeDevOps/yukon-collector/ingest"
+	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
 const (
@@ -242,39 +242,48 @@ func instanceKey(service, instance string) string {
 }
 
 // AcceptDeltaBatch marshals batch and queues it on the shard for its
-// service instance. It returns without waiting for delivery.
-func (s *ForwardingSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
+// service instance. It returns without waiting for delivery, and does not
+// use ctx: the request it comes from ends when the handler returns, long
+// before the queued item is delivered in the background.
+func (s *ForwardingSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	body, err := proto.Marshal(batch)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping delta batch: marshal failed", "error", err)
 		metrics.ForwardDropped.Inc("deltas", "marshal")
-		return
+		return nil
 	}
 	s.enqueue(queuedItem{key: instanceKey(batch.GetResource().GetServiceName(), batch.GetResource().GetServiceInstanceId()), path: ingest.DeltaBatchPath, body: body})
+	return nil
 }
 
 // AcceptManifest marshals manifest and queues it on the shard for its
-// service instance. It returns without waiting for delivery.
-func (s *ForwardingSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
+// service instance. It returns without waiting for delivery, and does not
+// use ctx: the request it comes from ends when the handler returns, long
+// before the queued item is delivered in the background.
+func (s *ForwardingSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	body, err := proto.Marshal(manifest)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping manifest: marshal failed", "error", err)
 		metrics.ForwardDropped.Inc("manifest", "marshal")
-		return
+		return nil
 	}
 	s.enqueue(queuedItem{key: instanceKey(manifest.GetServiceName(), manifest.GetServiceInstanceId()), path: ingest.ManifestPath, body: body})
+	return nil
 }
 
 // AcceptStaticBaseline marshals baseline and queues it on the shard for
-// its service instance. It returns without waiting for delivery.
-func (s *ForwardingSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
+// its service instance. It returns without waiting for delivery, and does
+// not use ctx: the request it comes from ends when the handler returns,
+// long before the queued item is delivered in the background.
+func (s *ForwardingSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
 	body, err := proto.Marshal(baseline)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping static baseline: marshal failed", "error", err)
 		metrics.ForwardDropped.Inc("static_baseline", "marshal")
-		return
+		return nil
 	}
 	s.enqueue(queuedItem{key: instanceKey(baseline.GetResource().GetServiceName(), baseline.GetResource().GetServiceInstanceId()), path: ingest.StaticBaselinePath, body: body})
+	return nil
 }
 
 func (s *ForwardingSink) enqueue(item queuedItem) {

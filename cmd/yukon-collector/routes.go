@@ -4,11 +4,11 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/LukeDevOps/yukon-collector/ingest"
 	"github.com/LukeDevOps/yukon-collector/internal/auth"
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
-	"github.com/LukeDevOps/yukon-collector/internal/ingest"
-	"github.com/LukeDevOps/yukon-collector/internal/metrics"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
+	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
 // registerRoutes wires the ingest handler and health check onto mux. When

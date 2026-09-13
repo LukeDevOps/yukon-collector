@@ -9,10 +9,10 @@ var (
 	IngestAccepted = NewCounter("yukon_collector_ingest_accepted_total",
 		"Payloads decoded, validated, and handed to the sink.", "payload")
 
-	// IngestRejected counts requests turned away before the sink. Reasons:
-	// content_type, too_large, read, malformed, invalid.
+	// IngestRejected counts requests turned away before or by the sink.
+	// Reasons: content_type, too_large, read, malformed, invalid, sink.
 	IngestRejected = NewCounter("yukon_collector_ingest_rejected_total",
-		"Requests rejected before reaching the sink.", "payload", "reason")
+		"Requests rejected before or by the sink.", "payload", "reason")
 
 	// AuthRejected counts requests refused with 401.
 	AuthRejected = NewCounter("yukon_collector_auth_rejected_total",

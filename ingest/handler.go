@@ -3,6 +3,7 @@
 package ingest
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,15 +14,20 @@ import (
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
-	"github.com/LukeDevOps/yukon-collector/internal/metrics"
+	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
 // Sink receives decoded payloads. A real backend implements this to persist
 // or forward them; the collector itself stays stateless.
+//
+// ctx is the request's context, so middleware such as an auth or tenant
+// resolver can attach request scope for the sink to read back. A non-nil
+// error means the payload was not taken: the handler answers 503 and the
+// sender is expected to retry.
 type Sink interface {
-	AcceptDeltaBatch(batch *yukonpb.DeltaBatch)
-	AcceptManifest(manifest *yukonpb.ProbeManifest)
-	AcceptStaticBaseline(baseline *yukonpb.StaticBaseline)
+	AcceptDeltaBatch(ctx context.Context, batch *yukonpb.DeltaBatch) error
+	AcceptManifest(ctx context.Context, manifest *yukonpb.ProbeManifest) error
+	AcceptStaticBaseline(ctx context.Context, baseline *yukonpb.StaticBaseline) error
 }
 
 // maxBodyBytes caps a single request body. A static baseline chunk can
@@ -108,7 +114,10 @@ func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, deltaBatchKind, err)
 		return
 	}
-	h.sink.AcceptDeltaBatch(&batch)
+	if err := h.sink.AcceptDeltaBatch(r.Context(), &batch); err != nil {
+		h.sinkFailed(w, deltaBatchKind, err)
+		return
+	}
 	metrics.IngestAccepted.Inc(deltaBatchKind.label)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -122,7 +131,10 @@ func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, manifestKind, err)
 		return
 	}
-	h.sink.AcceptManifest(&manifest)
+	if err := h.sink.AcceptManifest(r.Context(), &manifest); err != nil {
+		h.sinkFailed(w, manifestKind, err)
+		return
+	}
 	metrics.IngestAccepted.Inc(manifestKind.label)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -136,7 +148,10 @@ func (h *Handler) handleStaticBaseline(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, staticBaselineKind, err)
 		return
 	}
-	h.sink.AcceptStaticBaseline(&baseline)
+	if err := h.sink.AcceptStaticBaseline(r.Context(), &baseline); err != nil {
+		h.sinkFailed(w, staticBaselineKind, err)
+		return
+	}
 	metrics.IngestAccepted.Inc(staticBaselineKind.label)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -209,6 +224,14 @@ func (h *Handler) reject(w http.ResponseWriter, kind payloadKind, err error) {
 	h.logger.Warn("rejecting invalid "+kind.name, "error", err)
 	metrics.IngestRejected.Inc(kind.label, "invalid")
 	http.Error(w, "invalid "+kind.name+": "+err.Error(), http.StatusBadRequest)
+}
+
+// sinkFailed answers a valid payload the sink did not take with 503 and
+// no body, so the sender retries instead of the data being lost.
+func (h *Handler) sinkFailed(w http.ResponseWriter, kind payloadKind, err error) {
+	h.logger.Error("sink rejected "+kind.name, "error", err)
+	metrics.IngestRejected.Inc(kind.label, "sink")
+	w.WriteHeader(http.StatusServiceUnavailable)
 }
 
 // decode reads r's body into msg. It reports false after writing the

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LukeDevOps/yukon-collector/internal/metrics"
+	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
 const bearerPrefix = "Bearer "

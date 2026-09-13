@@ -1,6 +1,9 @@
 package ingest
 
 import (
+	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +12,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+
+	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
 type fakeSink struct {
@@ -17,16 +22,68 @@ type fakeSink struct {
 	baselines    []*yukonpb.StaticBaseline
 }
 
-func (f *fakeSink) AcceptDeltaBatch(batch *yukonpb.DeltaBatch) {
+func (f *fakeSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	f.deltaBatches = append(f.deltaBatches, batch)
+	return nil
 }
 
-func (f *fakeSink) AcceptManifest(manifest *yukonpb.ProbeManifest) {
+func (f *fakeSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	f.manifests = append(f.manifests, manifest)
+	return nil
 }
 
-func (f *fakeSink) AcceptStaticBaseline(baseline *yukonpb.StaticBaseline) {
+func (f *fakeSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
 	f.baselines = append(f.baselines, baseline)
+	return nil
+}
+
+// failingSink refuses every payload, standing in for a backend that could
+// not take the write (a database outage, for example).
+type failingSink struct{}
+
+func (failingSink) AcceptDeltaBatch(context.Context, *yukonpb.DeltaBatch) error {
+	return errors.New("sink unavailable")
+}
+
+func (failingSink) AcceptManifest(context.Context, *yukonpb.ProbeManifest) error {
+	return errors.New("sink unavailable")
+}
+
+func (failingSink) AcceptStaticBaseline(context.Context, *yukonpb.StaticBaseline) error {
+	return errors.New("sink unavailable")
+}
+
+// ctxKey avoids collisions with any key another package might set on the
+// same context.
+type ctxKey string
+
+// ctxCheckSink asserts that the context it receives carries the value set
+// under key, proving the handler passes the request's own context through
+// rather than a detached one.
+type ctxCheckSink struct {
+	t   *testing.T
+	key ctxKey
+}
+
+func (s ctxCheckSink) checkContext(ctx context.Context) {
+	if got := ctx.Value(s.key); got != "request-scoped" {
+		s.t.Errorf("sink saw context value %v, want %q", got, "request-scoped")
+	}
+}
+
+func (s ctxCheckSink) AcceptDeltaBatch(ctx context.Context, _ *yukonpb.DeltaBatch) error {
+	s.checkContext(ctx)
+	return nil
+}
+
+func (s ctxCheckSink) AcceptManifest(ctx context.Context, _ *yukonpb.ProbeManifest) error {
+	s.checkContext(ctx)
+	return nil
+}
+
+func (s ctxCheckSink) AcceptStaticBaseline(ctx context.Context, _ *yukonpb.StaticBaseline) error {
+	s.checkContext(ctx)
+	return nil
 }
 
 func newTestServer(sink Sink) *httptest.Server {
@@ -533,6 +590,99 @@ func TestHandleStaticBaseline_EmptyScan_Accepted(t *testing.T) {
 	}
 	if len(sink.baselines) != 1 {
 		t.Fatalf("sink received %d baselines, want 1", len(sink.baselines))
+	}
+}
+
+func TestHandler_SinkError_Returns503AndIncrementsRejected(t *testing.T) {
+	server := newTestServer(failingSink{})
+	defer server.Close()
+
+	cases := []struct {
+		name  string
+		path  string
+		label string
+		msg   proto.Message
+	}{
+		{
+			name:  "delta batch",
+			path:  DeltaBatchPath,
+			label: "deltas",
+			msg: &yukonpb.DeltaBatch{
+				Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+			},
+		},
+		{
+			name:  "manifest",
+			path:  ManifestPath,
+			label: "manifest",
+			msg: &yukonpb.ProbeManifest{
+				ServiceName:       "demo-service",
+				ServiceInstanceId: "instance-1",
+			},
+		},
+		{
+			name:  "static baseline",
+			path:  StaticBaselinePath,
+			label: "static_baseline",
+			msg: &yukonpb.StaticBaseline{
+				Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+				ScannedAt:  1700000000,
+				ChunkCount: 1,
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rejectedBefore := metrics.IngestRejected.Value(c.label, "sink")
+			acceptedBefore := metrics.IngestAccepted.Value(c.label)
+
+			resp := postProto(t, server.URL+c.path, c.msg)
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if len(body) != 0 {
+				t.Errorf("body = %q, want empty", body)
+			}
+			if got := metrics.IngestRejected.Value(c.label, "sink"); got != rejectedBefore+1 {
+				t.Errorf("IngestRejected(%q, sink) = %d, want %d", c.label, got, rejectedBefore+1)
+			}
+			if got := metrics.IngestAccepted.Value(c.label); got != acceptedBefore {
+				t.Errorf("IngestAccepted(%q) = %d, want unchanged at %d", c.label, got, acceptedBefore)
+			}
+		})
+	}
+}
+
+func TestHandler_PassesRequestContextToSink(t *testing.T) {
+	const key ctxKey = "test-key"
+	sink := ctxCheckSink{t: t, key: key}
+	mux := http.NewServeMux()
+	NewHandler(sink, nil).Register(mux)
+
+	batch := &yukonpb.DeltaBatch{
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+	}
+	body, err := proto.Marshal(batch)
+	if err != nil {
+		t.Fatalf("marshal batch: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, DeltaBatchPath, strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	req = req.WithContext(context.WithValue(req.Context(), key, "request-scoped"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
 	}
 }
 
