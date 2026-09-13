@@ -543,3 +543,35 @@ func TestForwardingSink_LargeResponseBody_DoesNotBlockDelivery(t *testing.T) {
 		t.Fatalf("delivered count = %d, want at least 1 (a 200 with a big body is still a success)", got)
 	}
 }
+
+func TestForwardingSink_AcceptAfterShutdown_DroppedWithoutBlocking(t *testing.T) {
+	var attempts atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	sink := mustNewSink(t, testConfig(backend.URL))
+	sink.Shutdown(context.Background())
+
+	before := metrics.ForwardDropped.Value("manifest", "shutting_down")
+	done := make(chan struct{})
+	go func() {
+		sink.AcceptManifest(manifestWithService("svc"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Accept after Shutdown blocked")
+	}
+
+	if got := metrics.ForwardDropped.Value("manifest", "shutting_down"); got != before+1 {
+		t.Fatalf("shutting_down drop count = %d, want %d", got, before+1)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if attempts.Load() != 0 {
+		t.Fatalf("backend received %d requests after Shutdown, want 0", attempts.Load())
+	}
+}

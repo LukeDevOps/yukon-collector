@@ -318,3 +318,26 @@ func TestHandleManifest_MissingServiceName_RejectedWithoutReachingSink(t *testin
 		t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
 	}
 }
+
+func TestHandler_WrongMethod_Rejected(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	for _, path := range []string{DeltaBatchPath, ManifestPath} {
+		resp, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s: status = %d, want %d", path, resp.StatusCode, http.StatusMethodNotAllowed)
+		}
+		if allow := resp.Header.Get("Allow"); !strings.Contains(allow, http.MethodPost) {
+			t.Errorf("GET %s: Allow = %q, want it to list POST", path, allow)
+		}
+	}
+	if len(sink.deltaBatches)+len(sink.manifests) != 0 {
+		t.Fatal("a non-POST request reached the sink")
+	}
+}
