@@ -105,6 +105,13 @@ Expect `202`. Without forwarding configured (see
 [Forwarding](#forwarding)), the collector logs each payload it receives
 and does nothing else with it.
 
+### Logging
+
+Logs are JSON lines on stdout at `info` and above. Set
+`YUKON_COLLECTOR_LOG_LEVEL` to `debug`, `info`, `warn`, or `error` to
+change that. Without forwarding configured every payload is logged at
+`info`, so `warn` is the quiet setting for a busy collector.
+
 ### Authentication
 
 Set `YUKON_COLLECTOR_AUTH_TOKEN` to require a matching

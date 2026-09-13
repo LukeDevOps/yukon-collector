@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"testing"
 
 	"golang.org/x/time/rate"
@@ -126,5 +127,30 @@ func TestResolveRateLimit_NonFiniteRPS_Errors(t *testing.T) {
 		if _, _, err := resolveRateLimit(raw, ""); err == nil {
 			t.Errorf("rps %q: expected an error, got nil", raw)
 		}
+	}
+}
+
+func TestResolveLogLevel(t *testing.T) {
+	for raw, want := range map[string]slog.Level{
+		"":      slog.LevelInfo,
+		"debug": slog.LevelDebug,
+		"INFO":  slog.LevelInfo,
+		"warn":  slog.LevelWarn,
+		"Error": slog.LevelError,
+	} {
+		got, err := resolveLogLevel(raw)
+		if err != nil {
+			t.Errorf("level %q: unexpected error: %v", raw, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("level %q = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+func TestResolveLogLevel_Garbage_Errors(t *testing.T) {
+	if _, err := resolveLogLevel("loud"); err == nil {
+		t.Fatal("expected an error for an unknown level, got nil")
 	}
 }

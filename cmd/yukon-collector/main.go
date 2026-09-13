@@ -36,7 +36,15 @@ const (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	level := new(slog.LevelVar)
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+
+	logLevel, err := resolveLogLevel(os.Getenv("YUKON_COLLECTOR_LOG_LEVEL"))
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	level.Set(logLevel)
 
 	addr := os.Getenv("YUKON_COLLECTOR_ADDR")
 	if addr == "" {
@@ -113,6 +121,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// resolveLogLevel parses YUKON_COLLECTOR_LOG_LEVEL (debug, info, warn, or
+// error, in any case). Unset means info.
+func resolveLogLevel(raw string) (slog.Level, error) {
+	if raw == "" {
+		return slog.LevelInfo, nil
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(raw)); err != nil {
+		return 0, fmt.Errorf("YUKON_COLLECTOR_LOG_LEVEL: %w", err)
+	}
+	return level, nil
 }
 
 // resolveAuthToken decides the token (if any) the ingest routes require.
