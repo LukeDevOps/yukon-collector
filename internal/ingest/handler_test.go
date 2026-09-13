@@ -160,3 +160,68 @@ func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 		t.Fatalf("sink received %d manifests, want 1", len(sink.manifests))
 	}
 }
+
+func TestHandleManifest_MalformedBody_RejectedWithoutReachingSink(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/x-protobuf", strings.NewReader("not a protobuf message"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	if len(sink.manifests) != 0 {
+		t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
+	}
+}
+
+func TestHandleManifest_WrongContentType_Rejected(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	manifest := &yukonpb.ProbeManifest{ServiceName: "demo-service"}
+	body, err := proto.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+
+	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnsupportedMediaType)
+	}
+	if len(sink.manifests) != 0 {
+		t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
+	}
+}
+
+func TestHandleManifest_BodyTooLarge_Rejected(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	oversized := strings.Repeat("x", maxBodyBytes+1)
+
+	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/x-protobuf", strings.NewReader(oversized))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+	if len(sink.manifests) != 0 {
+		t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
+	}
+}
