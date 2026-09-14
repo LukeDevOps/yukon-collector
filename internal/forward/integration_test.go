@@ -126,6 +126,9 @@ func TestIntegration_DeltaBatch_RoundTripsThroughRealHandlerOnBothEnds(t *testin
 		Deltas: []*yukonpb.ProbeDelta{
 			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, HitsTotal: 42},
 		},
+		EndpointDeltas: []*yukonpb.EndpointDelta{
+			{EndpointId: 5, FirstSeenAt: 1700000000, HitsTotal: 9},
+		},
 	}
 	body, err := proto.Marshal(sent)
 	if err != nil {
@@ -159,6 +162,22 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 		ServiceInstanceId: "instance-7",
 		Probes: []*yukonpb.ProbeLocation{
 			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, ClassName: "CheckoutService", MethodName: "applyDiscount"},
+		},
+		Endpoints: []*yukonpb.EndpointLocation{
+			{
+				EndpointId:        5,
+				Verb:              "POST",
+				RouteTemplate:     "/checkout/{id}",
+				VerbatimTemplate:  "/checkout/{id}",
+				Framework:         "spring-mvc",
+				DiscoverySource:   yukonpb.EndpointDiscoverySource_REGISTRATION,
+				HandlerClass:      proto.String("CheckoutService"),
+				HandlerMethod:     proto.String("applyDiscount"),
+				HandlerDescriptor: proto.String("()V"),
+			},
+		},
+		DisabledEndpointModules: []*yukonpb.DisabledEndpointModule{
+			{Module: "ktor-2", Reason: "no supported framework class on the classpath", DisabledAt: 1700000000},
 		},
 	}
 	body, err := proto.Marshal(sent)

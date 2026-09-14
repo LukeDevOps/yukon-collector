@@ -193,6 +193,36 @@ func TestHandleDeltaBatch_BodyTooLarge_Rejected(t *testing.T) {
 	}
 }
 
+func TestHandleDeltaBatch_EndpointDeltas_ReachSinkIntact(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	batch := &yukonpb.DeltaBatch{
+		Resource: &yukonpb.ResourceAttributes{
+			ServiceName:       "demo-service",
+			ServiceInstanceId: "instance-1",
+		},
+		EndpointDeltas: []*yukonpb.EndpointDelta{
+			{EndpointId: 1, FirstSeenAt: 1700000000, HitsTotal: 7},
+			{EndpointId: 2, FirstSeenAt: 1700000100, HitsTotal: 0},
+		},
+	}
+
+	resp := postProto(t, server.URL+DeltaBatchPath, batch)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+	if len(sink.deltaBatches) != 1 {
+		t.Fatalf("sink received %d batches, want 1", len(sink.deltaBatches))
+	}
+	if !proto.Equal(sink.deltaBatches[0], batch) {
+		t.Errorf("sink received %v, want %v", sink.deltaBatches[0], batch)
+	}
+}
+
 func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 	sink := &fakeSink{}
 	server := newTestServer(sink)
@@ -221,6 +251,77 @@ func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 	}
 	if len(sink.manifests) != 1 {
 		t.Fatalf("sink received %d manifests, want 1", len(sink.manifests))
+	}
+}
+
+func TestHandleManifest_Endpoints_ReachSinkIntact(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	manifest := &yukonpb.ProbeManifest{
+		ServiceName:       "demo-service",
+		ServiceInstanceId: "instance-1",
+		Endpoints: []*yukonpb.EndpointLocation{
+			{
+				EndpointId:        1,
+				Verb:              "GET",
+				RouteTemplate:     "/checkout/{id}",
+				VerbatimTemplate:  "/checkout/{id}",
+				Framework:         "spring-mvc",
+				DiscoverySource:   yukonpb.EndpointDiscoverySource_REGISTRATION,
+				HandlerClass:      proto.String("com.example.CheckoutController"),
+				HandlerMethod:     proto.String("get"),
+				HandlerDescriptor: proto.String("(Ljava/lang/String;)Lorg/springframework/http/ResponseEntity;"),
+			},
+			{
+				EndpointId:       2,
+				Verb:             "POST",
+				RouteTemplate:    "/promo",
+				VerbatimTemplate: "/promo",
+				Framework:        "spring-mvc",
+				DiscoverySource:  yukonpb.EndpointDiscoverySource_DISPATCH,
+			},
+		},
+		DisabledEndpointModules: []*yukonpb.DisabledEndpointModule{
+			{Module: "jdk-httpserver", Reason: "no supported framework class on the classpath", DisabledAt: 1700000000},
+		},
+	}
+
+	resp := postProto(t, server.URL+ManifestPath, manifest)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+	if len(sink.manifests) != 1 {
+		t.Fatalf("sink received %d manifests, want 1", len(sink.manifests))
+	}
+	if !proto.Equal(sink.manifests[0], manifest) {
+		t.Errorf("sink received %v, want %v", sink.manifests[0], manifest)
+	}
+}
+
+func TestHandleManifest_EndpointsWithoutInstanceId_Rejected(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	manifest := &yukonpb.ProbeManifest{
+		ServiceName: "demo-service",
+		Endpoints: []*yukonpb.EndpointLocation{
+			{EndpointId: 1, Verb: "GET", RouteTemplate: "/checkout/{id}"},
+		},
+	}
+
+	resp := postProto(t, server.URL+ManifestPath, manifest)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (endpoints present does not excuse the missing service_instance_id)", resp.StatusCode, http.StatusBadRequest)
+	}
+	if len(sink.manifests) != 0 {
+		t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
 	}
 }
 

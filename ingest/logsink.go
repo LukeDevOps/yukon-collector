@@ -22,24 +22,27 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 	return &LogSink{logger: logger}
 }
 
-// AcceptDeltaBatch logs the batch's service identity and delta count. It
-// never fails.
+// AcceptDeltaBatch logs the batch's service identity, delta count, and
+// endpoint delta count. It never fails.
 func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"service", batch.GetResource().GetServiceName(),
 		"instance", batch.GetResource().GetServiceInstanceId(),
 		"deltas", len(batch.GetDeltas()),
+		"endpoint_deltas", len(batch.GetEndpointDeltas()),
 	)
 	return nil
 }
 
-// AcceptManifest logs the manifest's service name and probe counts. It
-// never fails.
+// AcceptManifest logs the manifest's service name, probe counts, endpoint
+// count, and disabled endpoint module count. It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"service", manifest.GetServiceName(),
 		"probes", len(manifest.GetProbes()),
 		"skipped_classes", len(manifest.GetSkippedClasses()),
+		"endpoints", len(manifest.GetEndpoints()),
+		"disabled_endpoint_modules", len(manifest.GetDisabledEndpointModules()),
 	)
 	return nil
 }

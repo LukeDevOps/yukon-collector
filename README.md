@@ -33,10 +33,14 @@ the paths this collector serves:
   (service name, version, instance ID) plus per-probe hit counts since the
   last successful flush. Sent every flush interval even when empty, as a
   liveness heartbeat — an idle instance and a dead one both need to be
-  distinguishable from silence.
+  distinguishable from silence. It also carries endpoint hit totals, one
+  entry per HTTP endpoint a web framework has matched a request to.
 - `POST /v1/yukon/manifest` — a `ProbeManifest`: maps probe IDs to their
   source location (class, method, line, branch index), sent incrementally
   so the collector only needs metadata for probes it hasn't already seen.
+  It also carries the endpoints a web framework serves and any endpoint
+  module that switched itself off after a linkage failure against a
+  framework version it does not match.
 - `POST /v1/yukon/static-baseline` — a `StaticBaseline`: an opt-in,
   once-per-process static scan of a service instance's classes, sent as
   one or more chunks. Every chunk carries the same instance and
