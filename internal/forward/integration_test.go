@@ -162,6 +162,15 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 		ServiceInstanceId: "instance-7",
 		Probes: []*yukonpb.ProbeLocation{
 			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, ClassName: "CheckoutService", MethodName: "applyDiscount"},
+			{
+				ClassId: 3, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, ClassName: "CheckoutService", MethodName: "checkout",
+				Calls: []*yukonpb.CallEdge{
+					{ClassName: "CheckoutService", MethodName: "applyDiscount", MethodDescriptor: "()V", Virtual: true},
+				},
+			},
+		},
+		ClassSupertypes: []*yukonpb.ClassSupertypes{
+			{ClassId: 3, SuperClassName: "java.lang.Object", InterfaceNames: []string{"Service"}},
 		},
 		Endpoints: []*yukonpb.EndpointLocation{
 			{

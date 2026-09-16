@@ -34,12 +34,15 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch)
 	return nil
 }
 
-// AcceptManifest logs the manifest's service name, probe counts, endpoint
-// count, and disabled endpoint module count. It never fails.
+// AcceptManifest logs the manifest's service name, probe counts, call edge
+// and supertype counts, endpoint count, and disabled endpoint module count.
+// It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"service", manifest.GetServiceName(),
 		"probes", len(manifest.GetProbes()),
+		"call_edges", callEdgeCount(manifest.GetProbes()),
+		"class_supertypes", len(manifest.GetClassSupertypes()),
 		"skipped_classes", len(manifest.GetSkippedClasses()),
 		"endpoints", len(manifest.GetEndpoints()),
 		"disabled_endpoint_modules", len(manifest.GetDisabledEndpointModules()),
@@ -57,9 +60,31 @@ func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.Stat
 		"chunk", baseline.GetChunkIndex(),
 		"chunk_count", baseline.GetChunkCount(),
 		"declared_classes", len(baseline.GetDeclaredClasses()),
+		"declared_call_edges", declaredCallEdgeCount(baseline.GetDeclaredClasses()),
 		"statically_unsafe_classes", len(baseline.GetStaticallyUnsafeClasses()),
 		"unreadable_classes", len(baseline.GetUnreadableClasses()),
 		"unprobed_classes", len(baseline.GetUnprobedClasses()),
 	)
 	return nil
+}
+
+// callEdgeCount sums the call edges carried by probes.
+func callEdgeCount(probes []*yukonpb.ProbeLocation) int {
+	n := 0
+	for _, p := range probes {
+		n += len(p.GetCalls())
+	}
+	return n
+}
+
+// declaredCallEdgeCount sums the call edges carried by every method of
+// every declared class.
+func declaredCallEdgeCount(classes []*yukonpb.DeclaredClass) int {
+	n := 0
+	for _, c := range classes {
+		for _, m := range c.GetMethods() {
+			n += len(m.GetCalls())
+		}
+	}
+	return n
 }
