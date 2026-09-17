@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -265,5 +266,87 @@ func TestIntegration_StaticBaseline_RoundTripsThroughRealHandlerOnBothEnds(t *te
 	}
 	if byChunk[0].GetScannedAt() != byChunk[1].GetScannedAt() {
 		t.Errorf("chunk scanned_at mismatch: %d vs %d", byChunk[0].GetScannedAt(), byChunk[1].GetScannedAt())
+	}
+}
+
+// TestIntegration_QueueFull_RefusesWithServiceUnavailable proves the
+// backpressure path end to end: a real ingest.Handler in front of a
+// ForwardingSink answers 503, not 202, once the shard queue behind it has
+// no room, so the agent knows to keep its counts and resend.
+func TestIntegration_QueueFull_RefusesWithServiceUnavailable(t *testing.T) {
+	blockBackend := make(chan struct{})
+	backendReceivedFirst := make(chan struct{})
+	var signalFirst sync.Once
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signalFirst.Do(func() { close(backendReceivedFirst) })
+		<-blockBackend
+		w.WriteHeader(http.StatusOK)
+	}))
+	// t.Cleanup, not defer: cleanups run after the test body's own defers,
+	// so registering backend.Close via defer here would make it run before
+	// the unblock-then-shutdown cleanup below, and hang waiting for the
+	// still-blocked handler to return.
+	t.Cleanup(backend.Close)
+
+	cfg := testConfig(backend.URL)
+	cfg.Shards = 1
+	cfg.QueueSize = 1
+	cfg.RequestTimeout = time.Hour // don't let the timeout unblock the worker under test
+	fwd := mustNewSink(t, cfg)
+	t.Cleanup(func() {
+		close(blockBackend) // unblock the handler before Shutdown waits on the worker
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		fwd.Shutdown(ctx)
+	})
+
+	mux := http.NewServeMux()
+	ingest.NewHandler(fwd, discardLogger()).Register(mux)
+	front := httptest.NewServer(mux)
+	t.Cleanup(front.Close)
+
+	post := func(serviceName string) *http.Response {
+		t.Helper()
+		body, err := proto.Marshal(manifestWithService(serviceName))
+		if err != nil {
+			t.Fatalf("marshal manifest for %s: %v", serviceName, err)
+		}
+		resp, err := http.Post(front.URL+ingest.ManifestPath, "application/x-protobuf", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("post manifest for %s: %v", serviceName, err)
+		}
+		return resp
+	}
+
+	// svc-1 is picked up by the single worker, which then blocks in the
+	// backend handler above, holding the shard's only in-flight slot.
+	resp1 := post("svc-1")
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusAccepted {
+		t.Fatalf("first post status = %d, want %d", resp1.StatusCode, http.StatusAccepted)
+	}
+
+	// Wait for the worker to have actually pulled svc-1 off the queue
+	// before posting more: otherwise svc-2 could be the one that finds
+	// the queue full instead of svc-3.
+	select {
+	case <-backendReceivedFirst:
+	case <-time.After(time.Second):
+		t.Fatal("backend never received the first request")
+	}
+
+	// svc-2 fills the now-empty queue.
+	resp2 := post("svc-2")
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("second post status = %d, want %d", resp2.StatusCode, http.StatusAccepted)
+	}
+
+	// svc-3 finds the queue full and must be refused, not acknowledged.
+	resp3 := post("svc-3")
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("third post status = %d, want %d", resp3.StatusCode, http.StatusServiceUnavailable)
 	}
 }

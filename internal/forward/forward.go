@@ -68,9 +68,9 @@ type Config struct {
 	// other instance's healthy traffic. Defaults to defaultShards.
 	Shards int
 
-	// QueueSize bounds each shard's queue. A full shard drops the newest
-	// item, with a Warn log, rather than blocking the caller. Defaults to
-	// defaultQueueSize.
+	// QueueSize bounds each shard's queue. A full shard refuses the
+	// newest item, returning ErrQueueFull, rather than blocking the
+	// caller. Defaults to defaultQueueSize.
 	QueueSize int
 
 	// HTTPClient sends the relayed requests. Defaults to a client whose
@@ -157,11 +157,26 @@ type shard struct {
 	queue chan queuedItem
 }
 
+// ErrQueueFull is the error AcceptDeltaBatch, AcceptManifest, and
+// AcceptStaticBaseline return when the payload's shard queue has no room.
+// The ingest handler answers 503 for it, so the agent keeps its counts
+// and sends the payload again on its next flush.
+var ErrQueueFull = errors.New("forward: shard queue is full")
+
+// ErrShuttingDown is the error AcceptDeltaBatch, AcceptManifest, and
+// AcceptStaticBaseline return once Shutdown has started. The ingest
+// handler answers 503 for it, so the agent keeps its counts and sends
+// the payload again on its next flush.
+var ErrShuttingDown = errors.New("forward: sink is shutting down")
+
 // ForwardingSink is a Sink that relays decoded payloads to a backend
-// instead of just logging them. Accept methods enqueue and return
-// immediately; background workers, one per shard, do the actual HTTP
-// relay, so the agent-facing handler never blocks on the backend's
-// availability.
+// instead of just logging them. Accept methods queue the payload and
+// return at once. Background workers, one per shard, do the HTTP relay,
+// so the agent-facing handler never blocks on the backend.
+//
+// An Accept method returns an error when the payload's shard queue is
+// full or the sink is shutting down. The handler then answers 503, and
+// the agent is never told that the collector took data it did not queue.
 type ForwardingSink struct {
 	cfg    Config
 	shards []*shard
@@ -244,7 +259,10 @@ func instanceKey(service, instance string) string {
 // AcceptDeltaBatch marshals batch and queues it on the shard for its
 // service instance. It returns without waiting for delivery, and does not
 // use ctx: the request it comes from ends when the handler returns, long
-// before the queued item is delivered in the background.
+// before the queued item is delivered in the background. A marshal
+// failure is logged and counted but returned as nil: resending the same
+// batch cannot fix a marshal failure, so a 503 would only make the agent
+// retry it forever.
 func (s *ForwardingSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	body, err := proto.Marshal(batch)
 	if err != nil {
@@ -252,8 +270,7 @@ func (s *ForwardingSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.Delt
 		metrics.ForwardDropped.Inc("deltas", "marshal")
 		return nil
 	}
-	s.enqueue(queuedItem{key: instanceKey(batch.GetResource().GetServiceName(), batch.GetResource().GetServiceInstanceId()), path: ingest.DeltaBatchPath, body: body})
-	return nil
+	return s.enqueue(queuedItem{key: instanceKey(batch.GetResource().GetServiceName(), batch.GetResource().GetServiceInstanceId()), path: ingest.DeltaBatchPath, body: body})
 }
 
 // AcceptManifest marshals manifest and queues it on the shard for its
@@ -267,8 +284,7 @@ func (s *ForwardingSink) AcceptManifest(_ context.Context, manifest *yukonpb.Pro
 		metrics.ForwardDropped.Inc("manifest", "marshal")
 		return nil
 	}
-	s.enqueue(queuedItem{key: instanceKey(manifest.GetServiceName(), manifest.GetServiceInstanceId()), path: ingest.ManifestPath, body: body})
-	return nil
+	return s.enqueue(queuedItem{key: instanceKey(manifest.GetServiceName(), manifest.GetServiceInstanceId()), path: ingest.ManifestPath, body: body})
 }
 
 // AcceptStaticBaseline marshals baseline and queues it on the shard for
@@ -282,27 +298,37 @@ func (s *ForwardingSink) AcceptStaticBaseline(_ context.Context, baseline *yukon
 		metrics.ForwardDropped.Inc("static_baseline", "marshal")
 		return nil
 	}
-	s.enqueue(queuedItem{key: instanceKey(baseline.GetResource().GetServiceName(), baseline.GetResource().GetServiceInstanceId()), path: ingest.StaticBaselinePath, body: body})
-	return nil
+	return s.enqueue(queuedItem{key: instanceKey(baseline.GetResource().GetServiceName(), baseline.GetResource().GetServiceInstanceId()), path: ingest.StaticBaselinePath, body: body})
 }
 
-func (s *ForwardingSink) enqueue(item queuedItem) {
+// enqueue puts item on its shard's queue. It returns an error wrapping
+// ErrShuttingDown when Shutdown has started, or ErrQueueFull when the
+// shard queue has no room. It does not log the error: the ingest handler
+// logs every sink error it answers with 503.
+func (s *ForwardingSink) enqueue(item queuedItem) error {
 	if s.closed.Load() {
-		s.dropped(item, "shutting_down", nil)
-		return
+		s.refused(item, "shutting_down")
+		return fmt.Errorf("%w (service %s)", ErrShuttingDown, item.key)
 	}
 	sh := s.shards[shardIndex(item.key, len(s.shards))]
 	select {
 	case sh.queue <- item:
+		return nil
 	default:
-		s.dropped(item, "queue_full", nil)
+		s.refused(item, "queue_full")
+		return fmt.Errorf("%w (service %s)", ErrQueueFull, item.key)
 	}
+}
+
+// refused counts one payload the sink did not take, under reason
+// "shutting_down" or "queue_full". The sender still holds the payload and
+// is expected to send it again, so this is not a ForwardDropped count.
+func (s *ForwardingSink) refused(item queuedItem, reason string) {
+	metrics.ForwardRefused.Inc(ingest.PayloadLabel(item.path), reason)
 }
 
 // dropReasons maps a drop reason label to the text logged for it.
 var dropReasons = map[string]string{
-	"shutting_down":           "sink is shutting down",
-	"queue_full":              "shard queue full",
 	"permanent":               "permanent failure",
 	"retry_exhausted":         "retry budget exhausted",
 	"shutdown_deadline":       "shutdown deadline exceeded",
@@ -350,8 +376,11 @@ func (s *ForwardingSink) runShard(sh *shard) {
 }
 
 // deliver attempts item with the configured retry backoff, until it
-// succeeds, hits a permanent (non-retryable) failure, exhausts the retry
-// budget, or the sink starts shutting down.
+// succeeds, hits a permanent (non-retryable) failure, or exhausts the
+// retry budget. Shutdown can start while deliver holds item, either in
+// the retry wait or just after a retryable failure. deliver then gives
+// item one final attempt bounded by s.ctx, so every item ends as a
+// counted delivery or a counted drop.
 func (s *ForwardingSink) deliver(item queuedItem) {
 	b := newBackoff(s.cfg.RetryInitialInterval, s.cfg.RetryMaxInterval, s.cfg.RetryMaxElapsedTime)
 	payload := ingest.PayloadLabel(item.path)
@@ -365,6 +394,12 @@ func (s *ForwardingSink) deliver(item queuedItem) {
 			s.dropped(item, "permanent", err)
 			return
 		}
+		select {
+		case <-s.stopping:
+			s.finalDeliveryAttempt(s.ctx, item)
+			return
+		default:
+		}
 		wait, ok := b.next(retryAfter)
 		if !ok {
 			s.dropped(item, "retry_exhausted", err)
@@ -374,6 +409,7 @@ func (s *ForwardingSink) deliver(item queuedItem) {
 		case <-time.After(wait):
 			metrics.ForwardRetries.Inc(payload)
 		case <-s.stopping:
+			s.finalDeliveryAttempt(s.ctx, item)
 			return
 		}
 	}
@@ -426,11 +462,13 @@ func isRetryableStatus(code int) bool {
 	}
 }
 
-// Shutdown stops accepting new payloads, cuts off any in-flight retry
-// wait, and gives every payload still sitting in a shard's queue exactly
-// one more delivery attempt, bounded by ctx, instead of the full retry
-// sequence. This matches QueueBatch.Shutdown in the OTel Collector: a
-// bounded best-effort drain, not a guarantee every payload is delivered.
+// Shutdown stops accepting new payloads and gives every payload the sink
+// still holds exactly one more delivery attempt, bounded by ctx, instead
+// of the full retry sequence. That covers a payload in a shard's queue
+// and a payload a worker holds, either in a retry wait or just after a
+// retryable failure. This matches QueueBatch.Shutdown in the OTel
+// Collector: a bounded best-effort drain, not a guarantee every payload
+// is delivered.
 //
 // An attempt already in flight when Shutdown is called is allowed to
 // finish, but only within ctx: once ctx expires the attempt is cancelled,
@@ -473,17 +511,27 @@ func (s *ForwardingSink) drainOnce(ctx context.Context, sh *shard) {
 	for {
 		select {
 		case item := <-sh.queue:
-			if ctx.Err() != nil {
-				s.dropped(item, "shutdown_deadline", nil)
-				continue
-			}
-			if _, _, err := s.attempt(ctx, item); err != nil {
-				s.dropped(item, "shutdown_attempt_failed", err)
-			} else {
-				metrics.ForwardDelivered.Inc(ingest.PayloadLabel(item.path))
-			}
+			s.finalDeliveryAttempt(ctx, item)
 		default:
 			return
 		}
 	}
+}
+
+// finalDeliveryAttempt gives item its one shutdown attempt and records
+// the outcome: a delivery, a "shutdown_deadline" drop when ctx has
+// already ended, or a "shutdown_attempt_failed" drop. drainOnce passes
+// Shutdown's ctx for a queued payload. deliver passes s.ctx for a
+// payload a worker holds: a worker cannot see Shutdown's ctx, and
+// Shutdown cancels s.ctx when its own deadline passes.
+func (s *ForwardingSink) finalDeliveryAttempt(ctx context.Context, item queuedItem) {
+	if ctx.Err() != nil {
+		s.dropped(item, "shutdown_deadline", nil)
+		return
+	}
+	if _, _, err := s.attempt(ctx, item); err != nil {
+		s.dropped(item, "shutdown_attempt_failed", err)
+		return
+	}
+	metrics.ForwardDelivered.Inc(ingest.PayloadLabel(item.path))
 }

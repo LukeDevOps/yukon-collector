@@ -31,8 +31,21 @@ var (
 		"Delivery attempts made after a retryable failure.", "payload")
 
 	// ForwardDropped counts payloads discarded without delivery. Reasons:
-	// marshal, shutting_down, queue_full, permanent, retry_exhausted,
-	// shutdown_deadline, shutdown_attempt_failed.
+	// marshal, permanent, retry_exhausted, shutdown_deadline,
+	// shutdown_attempt_failed.
 	ForwardDropped = NewCounter("yukon_collector_forward_dropped_total",
 		"Payloads discarded without a successful delivery.", "payload", "reason")
+
+	// ForwardRefused counts payloads the forwarder did not take, answered
+	// with 503 so the sender sends them again. Reasons: queue_full,
+	// shutting_down.
+	ForwardRefused = NewCounter("yukon_collector_forward_refused_total",
+		"Payloads the forwarder did not take, answered 503 so the sender sends them again.", "payload", "reason")
+
+	// EnvironmentMismatch counts payloads whose agent-set environment
+	// differs from the collector's configured one. Its "payload" is
+	// "deltas" or "static_baseline"; a manifest carries no environment
+	// field, so it is never counted here.
+	EnvironmentMismatch = NewCounter("yukon_collector_environment_mismatch_total",
+		"Payloads whose agent-set environment differs from the collector's configured one.", "payload")
 )

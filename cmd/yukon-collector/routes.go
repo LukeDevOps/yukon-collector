@@ -7,6 +7,7 @@ import (
 	"github.com/LukeDevOps/yukon-collector/ingest"
 	"github.com/LukeDevOps/yukon-collector/internal/auth"
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
+	"github.com/LukeDevOps/yukon-collector/internal/processor"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 	"github.com/LukeDevOps/yukon-collector/metrics"
 )
@@ -27,7 +28,12 @@ import (
 // forwarding them, so local/dev/CI runs keep working with no backend at
 // all; registerRoutes then returns a nil *forward.ForwardingSink. A URL
 // that cannot be used is returned as an error.
-func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardCfg forward.Config) (*forward.ForwardingSink, error) {
+//
+// When envCfg.Value is non-empty, a processor.Environment wraps the
+// chosen sink and writes that environment onto delta batches and static
+// baselines before the sink sees them. A zero envCfg leaves payloads
+// untouched.
+func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig) (*forward.ForwardingSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -45,6 +51,10 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	} else {
 		logger.Warn("YUKON_COLLECTOR_FORWARD_URL not set; ingest payloads are only logged, not forwarded")
 		sink = ingest.NewLogSink(logger)
+	}
+	if envCfg.Value != "" {
+		logger.Info("stamping environment on ingested payloads", "environment", envCfg.Value, "action", envCfg.Action)
+		sink = processor.NewEnvironment(sink, envCfg, logger)
 	}
 	handler := ingest.NewHandler(sink, logger)
 

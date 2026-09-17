@@ -15,12 +15,14 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/time/rate"
 
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
+	"github.com/LukeDevOps/yukon-collector/internal/processor"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 )
 
@@ -79,8 +81,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	envCfg, err := resolveEnvironment(os.Getenv("YUKON_COLLECTOR_ENVIRONMENT"), os.Getenv("YUKON_COLLECTOR_ENVIRONMENT_ACTION"))
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
-	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg)
+	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg, envCfg)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -259,4 +267,29 @@ func positiveDurationEnv(getenv func(string) string, name string) (time.Duration
 		return 0, fmt.Errorf("%s must be positive", name)
 	}
 	return d, nil
+}
+
+// resolveEnvironment builds the processor.EnvironmentConfig from
+// YUKON_COLLECTOR_ENVIRONMENT and YUKON_COLLECTOR_ENVIRONMENT_ACTION. A
+// value that is blank after trimming space turns the processor off. An
+// action with no value is an error: the operator meant to label
+// payloads, and starting without the label would hide that mistake.
+func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig, error) {
+	value := strings.TrimSpace(valueRaw)
+
+	action, err := processor.ParseAction(actionRaw)
+	if err != nil {
+		return processor.EnvironmentConfig{}, fmt.Errorf("YUKON_COLLECTOR_ENVIRONMENT_ACTION: %w", err)
+	}
+
+	if value == "" {
+		if actionRaw != "" {
+			return processor.EnvironmentConfig{}, errors.New(
+				"YUKON_COLLECTOR_ENVIRONMENT_ACTION is set but YUKON_COLLECTOR_ENVIRONMENT is empty; " +
+					"set YUKON_COLLECTOR_ENVIRONMENT or unset YUKON_COLLECTOR_ENVIRONMENT_ACTION")
+		}
+		return processor.EnvironmentConfig{}, nil
+	}
+
+	return processor.EnvironmentConfig{Value: value, Action: action}, nil
 }

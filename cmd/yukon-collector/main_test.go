@@ -8,6 +8,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
+	"github.com/LukeDevOps/yukon-collector/internal/processor"
 )
 
 func TestResolveAuthToken_TokenSet_ReturnsToken(t *testing.T) {
@@ -198,6 +199,69 @@ func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
 	}
 	if cfg != want {
 		t.Fatalf("config = %+v, want %+v", cfg, want)
+	}
+}
+
+func TestResolveEnvironment(t *testing.T) {
+	tests := map[string]struct {
+		value   string
+		action  string
+		want    processor.EnvironmentConfig
+		wantErr bool
+	}{
+		"unset": {
+			value:  "",
+			action: "",
+			want:   processor.EnvironmentConfig{},
+		},
+		"value only": {
+			value:  "prod",
+			action: "",
+			want:   processor.EnvironmentConfig{Value: "prod", Action: processor.Insert},
+		},
+		"value with surrounding spaces": {
+			value:  "  prod  ",
+			action: "",
+			want:   processor.EnvironmentConfig{Value: "prod", Action: processor.Insert},
+		},
+		"value and upsert": {
+			value:  "prod",
+			action: "upsert",
+			want:   processor.EnvironmentConfig{Value: "prod", Action: processor.Upsert},
+		},
+		"bad action": {
+			value:   "prod",
+			action:  "overwrite",
+			wantErr: true,
+		},
+		"action without value": {
+			value:   "",
+			action:  "upsert",
+			wantErr: true,
+		},
+		"whitespace-only value with action": {
+			value:   "   ",
+			action:  "upsert",
+			wantErr: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := resolveEnvironment(tt.value, tt.action)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("config = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }
 

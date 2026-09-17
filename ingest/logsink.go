@@ -22,12 +22,13 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 	return &LogSink{logger: logger}
 }
 
-// AcceptDeltaBatch logs the batch's service identity, delta count, and
-// endpoint delta count. It never fails.
+// AcceptDeltaBatch logs the batch's service identity, environment, delta
+// count, and endpoint delta count. It never fails.
 func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"service", batch.GetResource().GetServiceName(),
 		"instance", batch.GetResource().GetServiceInstanceId(),
+		"environment", batch.GetResource().GetEnvironment(),
 		"deltas", len(batch.GetDeltas()),
 		"endpoint_deltas", len(batch.GetEndpointDeltas()),
 	)
@@ -50,12 +51,14 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManif
 	return nil
 }
 
-// AcceptStaticBaseline logs the baseline's service identity, scan
-// identity, chunk position, and class counts. It never fails.
+// AcceptStaticBaseline logs the baseline's service identity,
+// environment, scan identity, chunk position, and class counts. It never
+// fails.
 func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
 	s.logger.Info("received static baseline",
 		"service", baseline.GetResource().GetServiceName(),
 		"instance", baseline.GetResource().GetServiceInstanceId(),
+		"environment", baseline.GetResource().GetEnvironment(),
 		"scanned_at", baseline.GetScannedAt(),
 		"chunk", baseline.GetChunkIndex(),
 		"chunk_count", baseline.GetChunkCount(),

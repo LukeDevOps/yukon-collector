@@ -82,7 +82,12 @@ repo and is published to the Buf Schema Registry as
   the way an OTel Collector exporter re-sends OTLP downstream. Payloads
   are queued and sent by background workers, sharded by service identity
   so one instance's failing backend calls can't hold up another's, with
-  time-bounded exponential backoff on `429`/`502`/`503`/`504`.
+  time-bounded exponential backoff on `429`/`502`/`503`/`504`. A full
+  shard queue refuses the payload with `503` instead of queuing it, so
+  the agent sends it again.
+- `internal/processor` — sinks that wrap another sink, changing or
+  inspecting a decoded payload before passing it on: the role an OTel
+  Collector processor plays. One exists, `Environment`.
 - `internal/auth` — a shared-secret bearer-token check, wrapped around the
   ingest routes as HTTP middleware. Kept separate from `ingest.Handler` so
   the decode layer stays auth-agnostic.
@@ -204,11 +209,15 @@ probes.
 | `yukon_collector_rate_limited_total` | | 429 responses |
 | `yukon_collector_forward_delivered_total` | `payload` | Backend accepted the payload |
 | `yukon_collector_forward_retries_total` | `payload` | Attempts made after a retryable failure |
-| `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `shutting_down`, `queue_full`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
+| `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
+| `yukon_collector_forward_refused_total` | `payload`, `reason` | Not taken and answered `503` so the sender sends it again: `queue_full`, `shutting_down` |
+| `yukon_collector_environment_mismatch_total` | `payload` | The agent's environment differed from the collector's configured one (see [Environment](#environment)); `payload` is `deltas` or `static_baseline` only, since a manifest carries no environment field |
 
 `payload` is `deltas`, `manifest`, or `static_baseline`. The dropped
 counter is the one to alert on: every increment is agent data that never
-reached the backend.
+reached the backend. A steadily rising refused counter means the backend
+is slower than the fleet, or the queue is too small; no data is lost
+while agents keep retrying.
 
 ### Forwarding
 
@@ -233,9 +242,19 @@ go run ./cmd/yukon-collector
 Forwarding is asynchronous. The agent gets its `202` as soon as the
 payload is decoded and queued; background workers deliver it, retrying
 `429`/`502`/`503`/`504` with exponential backoff for up to five minutes.
-Any other failure is logged and the payload dropped, as is a payload that
-arrives while its queue is full. On shutdown, queued payloads get one
-delivery attempt each within the shutdown deadline.
+When the payload's queue is full, or the collector is shutting down, the
+collector answers `503` instead and does not take the payload. The agent
+treats that like any failed flush: it retries a few times, then keeps its
+counts and sends them on its next flush, so nothing is lost. The agent
+reports a probe again only when its hit count changes. If the collector
+acknowledged a payload and then dropped it, a rarely hit probe could look
+dead for the life of that agent instance.
+
+A payload that fails after it is queued is dropped and counted: the
+backend answered with a status that is not retryable, or retries ran
+past five minutes. On shutdown, every payload the collector still holds
+gets one more delivery attempt within the shutdown deadline, whether it
+sits in a queue or a worker was waiting to retry it.
 
 The defaults match the OTLP HTTP exporter's and should rarely need
 changing. Each can be overridden; durations use Go syntax (`30s`, `5m`).
@@ -243,7 +262,7 @@ changing. Each can be overridden; durations use Go syntax (`30s`, `5m`).
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `YUKON_COLLECTOR_FORWARD_SHARDS` | `8` | Independent queue/worker pairs; payloads are sharded by service identity |
-| `YUKON_COLLECTOR_FORWARD_QUEUE_SIZE` | `64` | Queued payloads per shard before new ones are dropped |
+| `YUKON_COLLECTOR_FORWARD_QUEUE_SIZE` | `64` | Queued payloads per shard before new ones are refused with `503` |
 | `YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT` | `10s` | Bound on one delivery attempt |
 | `YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL` | `5s` | First retry wait, grown 1.5x each attempt with jitter |
 | `YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL` | `30s` | Cap on the retry wait |
@@ -257,6 +276,45 @@ print what the first instance relayed. `internal/forward`'s integration
 tests do the same thing without a second process, wiring `ForwardingSink`
 straight into a second `ingest.Handler` to confirm a payload decoded on
 one end survives the relay and decodes identically on the other.
+
+### Environment
+
+The agent sets `environment` on a payload only when its own `environment`
+option is set, so a payload can arrive with the field blank. UAT traffic
+looks nothing like prod traffic: code that is dead in prod is often
+exercised in UAT, and the reverse. A backend has to know which
+environment each payload came from to keep the two apart. An operator
+usually runs one collector per environment, so the collector can label
+every payload that passes through it, with no change to any JVM's config.
+
+Set `YUKON_COLLECTOR_ENVIRONMENT` to the environment name to stamp onto
+every delta batch and static baseline the collector ingests:
+
+```
+YUKON_COLLECTOR_ENVIRONMENT=prod go run ./cmd/yukon-collector
+```
+
+`YUKON_COLLECTOR_ENVIRONMENT_ACTION` controls what happens when a payload
+already names an environment:
+
+| Action | Behaviour |
+| --- | --- |
+| `insert` (default) | Fills in the environment only when the agent left it blank; an agent's explicit value wins |
+| `upsert` | Always writes the collector's value, even over one the agent set; guarantees nothing passing through a prod collector is ever labelled anything else |
+
+When the agent's value differs from the collector's, that is a mismatch:
+`yukon_collector_environment_mismatch_total` goes up under either action,
+and a `debug` log line names the service and instance involved. A
+non-zero count means some JVM is configured for a different environment
+than the collector it reports to.
+
+A manifest carries no environment field, so it always passes through
+unchanged; a backend learns an instance's environment from its delta
+batches instead.
+
+Setting `YUKON_COLLECTOR_ENVIRONMENT_ACTION` without also setting
+`YUKON_COLLECTOR_ENVIRONMENT` is a misconfiguration and stops the
+collector at startup.
 
 ## Development
 

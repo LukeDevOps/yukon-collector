@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/proto"
@@ -15,6 +16,7 @@ import (
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
+	"github.com/LukeDevOps/yukon-collector/internal/processor"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
 )
 
@@ -58,10 +60,18 @@ func staticBaselineRequest(t *testing.T, serverURL string) *http.Request {
 	return req
 }
 
-// mustRegisterRoutes wires routes for a config the test expects to be valid.
+// mustRegisterRoutes wires routes for a config the test expects to be
+// valid, with the environment processor left off.
 func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
 	t.Helper()
-	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken})
+	return mustRegisterRoutesWithEnv(t, mux, authToken, limiter, forwardURL, forwardAuthToken, processor.EnvironmentConfig{})
+}
+
+// mustRegisterRoutesWithEnv is mustRegisterRoutes with an explicit
+// envCfg, for tests that care how the environment processor behaves.
+func mustRegisterRoutesWithEnv(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string, envCfg processor.EnvironmentConfig) *forward.ForwardingSink {
+	t.Helper()
+	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken}, envCfg)
 	if err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
@@ -258,7 +268,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 
 func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}); err == nil {
+	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}); err == nil {
 		t.Fatal("expected an error for an unusable forward URL, got nil")
 	}
 }
@@ -286,5 +296,48 @@ func TestRegisterRoutes_Metrics_CountsAcceptedIngest(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `yukon_collector_ingest_accepted_total{payload="deltas"} `) {
 		t.Fatalf("metrics output missing the accepted-deltas series:\n%s", body)
+	}
+}
+
+func TestRegisterRoutes_EnvironmentConfigSet_StampsForwardedDeltaBatch(t *testing.T) {
+	received := make(chan *yukonpb.DeltaBatch, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read forwarded body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var batch yukonpb.DeltaBatch
+		if err := proto.Unmarshal(body, &batch); err != nil {
+			t.Errorf("unmarshal forwarded body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		received <- &batch
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	mux := http.NewServeMux()
+	fwd := mustRegisterRoutesWithEnv(t, mux, "", nil, backend.URL, "", processor.EnvironmentConfig{Value: "uat"})
+	defer fwd.Shutdown(context.Background())
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp := postDelta(t, server.URL)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+
+	select {
+	case batch := <-received:
+		if got := batch.GetResource().GetEnvironment(); got != "uat" {
+			t.Fatalf("forwarded batch environment = %q, want %q", got, "uat")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the backend to receive the forwarded batch")
 	}
 }
