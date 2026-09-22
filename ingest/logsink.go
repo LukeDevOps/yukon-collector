@@ -23,7 +23,7 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 }
 
 // AcceptDeltaBatch logs the batch's service identity, environment, delta
-// count, and endpoint delta count. It never fails.
+// count, endpoint delta count, and dependency delta count. It never fails.
 func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"service", batch.GetResource().GetServiceName(),
@@ -31,13 +31,15 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch)
 		"environment", batch.GetResource().GetEnvironment(),
 		"deltas", len(batch.GetDeltas()),
 		"endpoint_deltas", len(batch.GetEndpointDeltas()),
+		"dependency_deltas", len(batch.GetDependencyDeltas()),
 	)
 	return nil
 }
 
 // AcceptManifest logs the manifest's service name, probe counts, call edge
-// and supertype counts, endpoint count, and disabled endpoint module count.
-// It never fails.
+// and supertype counts, endpoint count, disabled endpoint module count,
+// dependency and reference counts, and whether the instance records
+// references. It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"service", manifest.GetServiceName(),
@@ -47,6 +49,11 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManif
 		"skipped_classes", len(manifest.GetSkippedClasses()),
 		"endpoints", len(manifest.GetEndpoints()),
 		"disabled_endpoint_modules", len(manifest.GetDisabledEndpointModules()),
+		"dependencies", len(manifest.GetDependencies()),
+		"referenced_classes", referencedClassCount(manifest.GetProbes()),
+		"class_references", len(manifest.GetClassReferences()),
+		"external_classes", len(manifest.GetExternalClasses()),
+		"references_recorded", manifest.GetReferencesRecorded(),
 	)
 	return nil
 }
@@ -64,6 +71,7 @@ func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.Stat
 		"chunk_count", baseline.GetChunkCount(),
 		"declared_classes", len(baseline.GetDeclaredClasses()),
 		"declared_call_edges", declaredCallEdgeCount(baseline.GetDeclaredClasses()),
+		"declared_referenced_classes", declaredReferencedClassCount(baseline.GetDeclaredClasses()),
 		"statically_unsafe_classes", len(baseline.GetStaticallyUnsafeClasses()),
 		"unreadable_classes", len(baseline.GetUnreadableClasses()),
 		"unprobed_classes", len(baseline.GetUnprobedClasses()),
@@ -87,6 +95,28 @@ func declaredCallEdgeCount(classes []*yukonpb.DeclaredClass) int {
 	for _, c := range classes {
 		for _, m := range c.GetMethods() {
 			n += len(m.GetCalls())
+		}
+	}
+	return n
+}
+
+// referencedClassCount sums the referenced class names carried by probes.
+func referencedClassCount(probes []*yukonpb.ProbeLocation) int {
+	n := 0
+	for _, p := range probes {
+		n += len(p.GetReferencedClasses())
+	}
+	return n
+}
+
+// declaredReferencedClassCount sums the referenced class names carried by
+// every declared class and every method of it.
+func declaredReferencedClassCount(classes []*yukonpb.DeclaredClass) int {
+	n := 0
+	for _, c := range classes {
+		n += len(c.GetReferencedClasses())
+		for _, m := range c.GetMethods() {
+			n += len(m.GetReferencedClasses())
 		}
 	}
 	return n

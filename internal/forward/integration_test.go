@@ -130,6 +130,9 @@ func TestIntegration_DeltaBatch_RoundTripsThroughRealHandlerOnBothEnds(t *testin
 		EndpointDeltas: []*yukonpb.EndpointDelta{
 			{EndpointId: 5, FirstSeenAt: 1700000000, HitsTotal: 9},
 		},
+		DependencyDeltas: []*yukonpb.DependencyDelta{
+			{DependencyId: 2, FirstLoadedAt: 1700000000, LoadedClassesTotal: 378},
+		},
 	}
 	body, err := proto.Marshal(sent)
 	if err != nil {
@@ -168,6 +171,7 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 				Calls: []*yukonpb.CallEdge{
 					{ClassName: "CheckoutService", MethodName: "applyDiscount", MethodDescriptor: "()V", Virtual: true},
 				},
+				ReferencedClasses: []string{"tools.jackson.databind.json.JsonMapper"},
 			},
 		},
 		ClassSupertypes: []*yukonpb.ClassSupertypes{
@@ -189,6 +193,24 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 		DisabledEndpointModules: []*yukonpb.DisabledEndpointModule{
 			{Module: "ktor-2", Reason: "no supported framework class on the classpath", DisabledAt: 1700000000},
 		},
+		Dependencies: []*yukonpb.DependencyLocation{
+			{
+				DependencyId:    2,
+				Identities:      []*yukonpb.DependencyIdentity{{GroupId: "tools.jackson.core", ArtifactId: "jackson-databind", Version: "3.1.5"}},
+				IdentitySource:  yukonpb.DependencyIdentitySource_POM_PROPERTIES,
+				Location:        "BOOT-INF/lib/jackson-databind-3.1.5.jar",
+				DiscoverySource: yukonpb.DependencyDiscoverySource_STARTUP_CLASSPATH,
+				ClassCount:      proto.Int32(880),
+			},
+		},
+		ClassReferences: []*yukonpb.ClassReferences{
+			{ClassId: 3, ReferencedClasses: []string{"org.springframework.stereotype.Service"}},
+		},
+		ExternalClasses: []*yukonpb.ExternalClass{
+			{ClassName: "tools.jackson.databind.json.JsonMapper", DependencyId: proto.Int32(2)},
+			{ClassName: "org.example.Missing", Absent: true},
+		},
+		ReferencesRecorded: true,
 	}
 	body, err := proto.Marshal(sent)
 	if err != nil {
@@ -226,7 +248,11 @@ func TestIntegration_StaticBaseline_RoundTripsThroughRealHandlerOnBothEnds(t *te
 		ChunkIndex: 0,
 		ChunkCount: 2,
 		DeclaredClasses: []*yukonpb.DeclaredClass{
-			{ClassName: "CheckoutService", Methods: []*yukonpb.DeclaredMethod{{MethodName: "applyDiscount", MethodDescriptor: "()V"}}},
+			{
+				ClassName:         "CheckoutService",
+				Methods:           []*yukonpb.DeclaredMethod{{MethodName: "applyDiscount", MethodDescriptor: "()V", ReferencedClasses: []string{"tools.jackson.databind.json.JsonMapper"}}},
+				ReferencedClasses: []string{"org.springframework.stereotype.Service"},
+			},
 		},
 	}
 	chunk1 := &yukonpb.StaticBaseline{
