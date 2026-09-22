@@ -59,9 +59,10 @@ type EnvironmentConfig struct {
 }
 
 // Environment is an ingest.Sink that writes a configured environment
-// name onto each delta batch and static baseline, then passes the
-// payload to next. A backend can then expect an environment on every
-// payload, even from an agent whose own config names none.
+// name onto the resource of each delta batch, manifest and static
+// baseline, then passes the payload to next. A backend can then expect
+// an environment on every payload, even from an agent whose own config
+// names none.
 //
 // It changes the resource of the decoded message in place. This is safe
 // because ingest.Handler decodes a fresh message for each request and
@@ -98,10 +99,10 @@ func (e *Environment) AcceptStaticBaseline(ctx context.Context, baseline *yukonp
 	return e.next.AcceptStaticBaseline(ctx, baseline)
 }
 
-// AcceptManifest passes manifest to next unchanged. A manifest carries
-// no environment field; a backend learns an instance's environment from
-// its delta batches instead.
+// AcceptManifest stamps the manifest's resource with the configured
+// environment, then passes the manifest to next.
 func (e *Environment) AcceptManifest(ctx context.Context, manifest *yukonpb.ProbeManifest) error {
+	e.stamp(manifest.GetResource(), "manifest")
 	return e.next.AcceptManifest(ctx, manifest)
 }
 
@@ -128,6 +129,7 @@ func (e *Environment) stamp(res *yukonpb.ResourceAttributes, payload string) {
 	e.logger.Debug("agent environment does not match the collector's configured environment",
 		"service", res.GetServiceName(),
 		"instance", res.GetServiceInstanceId(),
+		"run", res.GetRunId(),
 		"payload", payload,
 		"agent_environment", agentEnv,
 		"collector_environment", e.cfg.Value,

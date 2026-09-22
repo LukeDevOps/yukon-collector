@@ -38,7 +38,7 @@ func TestEnvironment_AcceptDeltaBatch_AbsentEnvironment_Stamped(t *testing.T) {
 	next := &recordingSink{}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Insert}, nil)
 
-	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}}
+	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}}
 	if err := env.AcceptDeltaBatch(context.Background(), batch); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestEnvironment_AcceptStaticBaseline_AbsentEnvironment_Stamped(t *testing.T
 	next := &recordingSink{}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Insert}, nil)
 
-	baseline := &yukonpb.StaticBaseline{Resource: &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}}
+	baseline := &yukonpb.StaticBaseline{Resource: &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}}
 	if err := env.AcceptStaticBaseline(context.Background(), baseline); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestEnvironment_Insert_ExplicitEmptyEnvironment_Stamped(t *testing.T) {
 	next := &recordingSink{}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Insert}, nil)
 
-	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}
+	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 	res.SetEnvironment("")
 	batch := &yukonpb.DeltaBatch{Resource: res}
 
@@ -88,7 +88,7 @@ func TestEnvironment_Insert_DifferentAgentValue_KeptAndMismatchCounted(t *testin
 	next := &recordingSink{}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Insert}, nil)
 
-	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}
+	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 	res.SetEnvironment("uat")
 	batch := &yukonpb.DeltaBatch{Resource: res}
 
@@ -109,7 +109,7 @@ func TestEnvironment_Insert_DifferentAgentValue_StaticBaselineMismatchCounted(t 
 	next := &recordingSink{}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Insert}, nil)
 
-	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}
+	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 	res.SetEnvironment("uat")
 	baseline := &yukonpb.StaticBaseline{Resource: res}
 
@@ -129,7 +129,7 @@ func TestEnvironment_EqualValue_CounterUnchanged(t *testing.T) {
 			next := &recordingSink{}
 			env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: action}, nil)
 
-			res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}
+			res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 			res.SetEnvironment("prod")
 			batch := &yukonpb.DeltaBatch{Resource: res}
 
@@ -152,7 +152,7 @@ func TestEnvironment_Upsert_DifferentAgentValue_OverwrittenAndMismatchCounted(t 
 	next := &recordingSink{}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Upsert}, nil)
 
-	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}
+	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 	res.SetEnvironment("uat")
 	batch := &yukonpb.DeltaBatch{Resource: res}
 
@@ -167,16 +167,39 @@ func TestEnvironment_Upsert_DifferentAgentValue_OverwrittenAndMismatchCounted(t 
 	}
 }
 
-func TestEnvironment_AcceptManifest_ReachesNextUnchanged(t *testing.T) {
+func TestEnvironment_AcceptManifest_AbsentEnvironment_Stamped(t *testing.T) {
 	next := &recordingSink{}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Insert}, nil)
 
-	manifest := &yukonpb.ProbeManifest{ServiceName: "svc", ServiceInstanceId: "i1"}
+	manifest := &yukonpb.ProbeManifest{Resource: &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}}
 	if err := env.AcceptManifest(context.Background(), manifest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if got := manifest.GetResource().GetEnvironment(); got != "prod" {
+		t.Fatalf("environment = %q, want %q", got, "prod")
+	}
 	if len(next.manifests) != 1 || next.manifests[0] != manifest {
 		t.Fatalf("next did not receive the same manifest pointer")
+	}
+}
+
+func TestEnvironment_Upsert_ManifestMismatch_OverwrittenAndCounted(t *testing.T) {
+	next := &recordingSink{}
+	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Upsert}, nil)
+	before := metrics.EnvironmentMismatch.Value("manifest")
+
+	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
+	res.SetEnvironment("uat")
+	manifest := &yukonpb.ProbeManifest{Resource: res}
+
+	if err := env.AcceptManifest(context.Background(), manifest); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := manifest.GetResource().GetEnvironment(); got != "prod" {
+		t.Fatalf("environment = %q, want %q", got, "prod")
+	}
+	if got := metrics.EnvironmentMismatch.Value("manifest") - before; got != 1 {
+		t.Fatalf("mismatch counter increased by %d, want 1", got)
 	}
 }
 
@@ -198,7 +221,7 @@ func TestEnvironment_NextError_Returned(t *testing.T) {
 	next := &recordingSink{err: wantErr}
 	env := NewEnvironment(next, EnvironmentConfig{Value: "prod", Action: Insert}, nil)
 
-	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1"}}
+	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}}
 	if err := env.AcceptDeltaBatch(context.Background(), batch); !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want %v", err, wantErr)
 	}

@@ -44,8 +44,7 @@ var (
 
 	// EnvironmentMismatch counts payloads whose agent-set environment
 	// differs from the collector's configured one. Its "payload" is
-	// "deltas" or "static_baseline"; a manifest carries no environment
-	// field, so it is never counted here.
+	// "deltas", "manifest" or "static_baseline".
 	EnvironmentMismatch = NewCounter("yukon_collector_environment_mismatch_total",
 		"Payloads whose agent-set environment differs from the collector's configured one.", "payload")
 )

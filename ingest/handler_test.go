@@ -101,6 +101,7 @@ func TestHandleDeltaBatch_ValidPayload_ReachesSink(t *testing.T) {
 		Resource: &yukonpb.ResourceAttributes{
 			ServiceName:       "demo-service",
 			ServiceInstanceId: "instance-1",
+			RunId:             "run-1",
 		},
 		Deltas: []*yukonpb.ProbeDelta{
 			{ClassId: 1, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, HitsTotal: 5},
@@ -152,7 +153,7 @@ func TestHandleDeltaBatch_WrongContentType_Rejected(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}}
+	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}}
 	body, err := proto.Marshal(batch)
 	if err != nil {
 		t.Fatalf("marshal batch: %v", err)
@@ -202,6 +203,7 @@ func TestHandleDeltaBatch_EndpointDeltas_ReachSinkIntact(t *testing.T) {
 		Resource: &yukonpb.ResourceAttributes{
 			ServiceName:       "demo-service",
 			ServiceInstanceId: "instance-1",
+			RunId:             "run-1",
 		},
 		EndpointDeltas: []*yukonpb.EndpointDelta{
 			{EndpointId: 1, FirstSeenAt: 1700000000, HitsTotal: 7},
@@ -229,8 +231,7 @@ func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 	defer server.Close()
 
 	manifest := &yukonpb.ProbeManifest{
-		ServiceName:       "demo-service",
-		ServiceInstanceId: "instance-1",
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		Probes: []*yukonpb.ProbeLocation{
 			{ClassId: 1, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, ClassName: "com.example.Foo"},
 		},
@@ -252,6 +253,10 @@ func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 	if len(sink.manifests) != 1 {
 		t.Fatalf("sink received %d manifests, want 1", len(sink.manifests))
 	}
+	res := sink.manifests[0].GetResource()
+	if res.GetServiceName() != "demo-service" || res.GetServiceInstanceId() != "instance-1" || res.GetRunId() != "run-1" {
+		t.Errorf("manifest resource = %v, want demo-service/instance-1/run-1", res)
+	}
 }
 
 func TestHandleManifest_Endpoints_ReachSinkIntact(t *testing.T) {
@@ -260,8 +265,7 @@ func TestHandleManifest_Endpoints_ReachSinkIntact(t *testing.T) {
 	defer server.Close()
 
 	manifest := &yukonpb.ProbeManifest{
-		ServiceName:       "demo-service",
-		ServiceInstanceId: "instance-1",
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		Endpoints: []*yukonpb.EndpointLocation{
 			{
 				EndpointId:        1,
@@ -308,7 +312,7 @@ func TestHandleManifest_EndpointsWithoutInstanceId_Rejected(t *testing.T) {
 	defer server.Close()
 
 	manifest := &yukonpb.ProbeManifest{
-		ServiceName: "demo-service",
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"},
 		Endpoints: []*yukonpb.EndpointLocation{
 			{EndpointId: 1, Verb: "GET", RouteTemplate: "/checkout/{id}"},
 		},
@@ -349,7 +353,7 @@ func TestHandleManifest_WrongContentType_Rejected(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	manifest := &yukonpb.ProbeManifest{ServiceName: "demo-service"}
+	manifest := &yukonpb.ProbeManifest{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}}
 	body, err := proto.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
@@ -396,7 +400,7 @@ func TestHandleDeltaBatch_ContentTypeWithParameters_Accepted(t *testing.T) {
 	defer server.Close()
 
 	batch := &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	}
 	body, err := proto.Marshal(batch)
 	if err != nil {
@@ -434,8 +438,9 @@ func TestHandleDeltaBatch_MissingIdentity_RejectedWithoutReachingSink(t *testing
 	for name, batch := range map[string]*yukonpb.DeltaBatch{
 		"empty body":          {},
 		"no resource":         {Deltas: []*yukonpb.ProbeDelta{{ClassId: 1}}},
-		"no service name":     {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1"}},
-		"no service instance": {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service"}},
+		"no service name":     {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}},
+		"no service instance": {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}},
+		"no run id":           {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sink := &fakeSink{}
@@ -460,7 +465,7 @@ func TestHandleDeltaBatch_EmptyHeartbeatWithIdentity_Accepted(t *testing.T) {
 	defer server.Close()
 
 	resp := postProto(t, server.URL+"/v1/yukon/deltas", &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
@@ -471,8 +476,10 @@ func TestHandleDeltaBatch_EmptyHeartbeatWithIdentity_Accepted(t *testing.T) {
 func TestHandleManifest_MissingIdentity_RejectedWithoutReachingSink(t *testing.T) {
 	for name, manifest := range map[string]*yukonpb.ProbeManifest{
 		"empty body":          {},
-		"no service name":     {ServiceInstanceId: "instance-1"},
-		"no service instance": {ServiceName: "demo-service"},
+		"no resource":         {Probes: []*yukonpb.ProbeLocation{{ClassId: 1}}},
+		"no service name":     {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}},
+		"no service instance": {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}},
+		"no run id":           {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sink := &fakeSink{}
@@ -486,6 +493,37 @@ func TestHandleManifest_MissingIdentity_RejectedWithoutReachingSink(t *testing.T
 			}
 			if len(sink.manifests) != 0 {
 				t.Fatalf("sink received %d manifests, want 0", len(sink.manifests))
+			}
+		})
+	}
+}
+
+func TestHandler_EmptyRunId_RejectedForEveryPayload(t *testing.T) {
+	res := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}
+	for path, msg := range map[string]proto.Message{
+		DeltaBatchPath:     &yukonpb.DeltaBatch{Resource: res},
+		ManifestPath:       &yukonpb.ProbeManifest{Resource: res},
+		StaticBaselinePath: &yukonpb.StaticBaseline{Resource: res, ScannedAt: 1700000000, ChunkCount: 1},
+	} {
+		t.Run(path, func(t *testing.T) {
+			sink := &fakeSink{}
+			server := newTestServer(sink)
+			defer server.Close()
+
+			resp := postProto(t, server.URL+path, msg)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if !strings.Contains(string(body), "resource.run_id is empty") {
+				t.Errorf("body = %q, want it to name resource.run_id", body)
+			}
+			if n := len(sink.deltaBatches) + len(sink.manifests) + len(sink.baselines); n != 0 {
+				t.Fatalf("sink received %d payloads, want 0", n)
 			}
 		})
 	}
@@ -523,6 +561,7 @@ func TestHandleStaticBaseline_ValidPayload_ReachesSink(t *testing.T) {
 		Resource: &yukonpb.ResourceAttributes{
 			ServiceName:       "demo-service",
 			ServiceInstanceId: "instance-1",
+			RunId:             "run-1",
 		},
 		ScannedAt:  1700000000,
 		ChunkIndex: 0,
@@ -583,7 +622,7 @@ func TestHandleStaticBaseline_WrongContentType_Rejected(t *testing.T) {
 	defer server.Close()
 
 	baseline := &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkCount: 1,
 	}
@@ -628,13 +667,14 @@ func TestHandleStaticBaseline_BodyTooLarge_Rejected(t *testing.T) {
 }
 
 func TestHandleStaticBaseline_InvalidFields_RejectedWithoutReachingSink(t *testing.T) {
-	validResource := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}
+	validResource := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
 
 	for name, baseline := range map[string]*yukonpb.StaticBaseline{
 		"empty body":                       {},
 		"no resource":                      {ScannedAt: 1700000000, ChunkCount: 1},
-		"no service name":                  {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1"}, ScannedAt: 1700000000, ChunkCount: 1},
-		"no service instance":              {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service"}, ScannedAt: 1700000000, ChunkCount: 1},
+		"no service name":                  {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}, ScannedAt: 1700000000, ChunkCount: 1},
+		"no service instance":              {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}, ScannedAt: 1700000000, ChunkCount: 1},
+		"no run id":                        {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}, ScannedAt: 1700000000, ChunkCount: 1},
 		"zero scanned_at":                  {Resource: validResource, ScannedAt: 0, ChunkCount: 1},
 		"zero chunk_count":                 {Resource: validResource, ScannedAt: 1700000000, ChunkCount: 0},
 		"negative chunk_index":             {Resource: validResource, ScannedAt: 1700000000, ChunkCount: 1, ChunkIndex: -1},
@@ -663,7 +703,7 @@ func TestHandleStaticBaseline_LastChunk_Accepted(t *testing.T) {
 	defer server.Close()
 
 	resp := postProto(t, server.URL+StaticBaselinePath, &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkIndex: 2,
 		ChunkCount: 3,
@@ -680,7 +720,7 @@ func TestHandleStaticBaseline_EmptyScan_Accepted(t *testing.T) {
 	defer server.Close()
 
 	resp := postProto(t, server.URL+StaticBaselinePath, &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkIndex: 0,
 		ChunkCount: 1,
@@ -709,7 +749,7 @@ func TestHandler_SinkError_Returns503AndIncrementsRejected(t *testing.T) {
 			path:  DeltaBatchPath,
 			label: "deltas",
 			msg: &yukonpb.DeltaBatch{
-				Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+				Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 			},
 		},
 		{
@@ -717,8 +757,7 @@ func TestHandler_SinkError_Returns503AndIncrementsRejected(t *testing.T) {
 			path:  ManifestPath,
 			label: "manifest",
 			msg: &yukonpb.ProbeManifest{
-				ServiceName:       "demo-service",
-				ServiceInstanceId: "instance-1",
+				Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 			},
 		},
 		{
@@ -726,7 +765,7 @@ func TestHandler_SinkError_Returns503AndIncrementsRejected(t *testing.T) {
 			path:  StaticBaselinePath,
 			label: "static_baseline",
 			msg: &yukonpb.StaticBaseline{
-				Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+				Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 				ScannedAt:  1700000000,
 				ChunkCount: 1,
 			},
@@ -768,7 +807,7 @@ func TestHandler_PassesRequestContextToSink(t *testing.T) {
 	NewHandler(sink, nil).Register(mux)
 
 	batch := &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	}
 	body, err := proto.Marshal(batch)
 	if err != nil {

@@ -249,9 +249,11 @@ func validateURL(raw string) (string, error) {
 }
 
 // instanceKey builds the shard key every payload type is routed on:
-// service name and instance ID together. All three payloads are only
-// meaningful within one running instance, since class_id is assigned
-// per instance in load order.
+// service name and instance ID together. The run ID is left out on purpose. A
+// restarted instance gets a different run ID, and a key with the run ID in it
+// would move the instance to another shard. The single worker per shard
+// keeps one instance's payloads in order, and that order would be lost
+// across the restart.
 func instanceKey(service, instance string) string {
 	return service + "/" + instance
 }
@@ -284,7 +286,7 @@ func (s *ForwardingSink) AcceptManifest(_ context.Context, manifest *yukonpb.Pro
 		metrics.ForwardDropped.Inc("manifest", "marshal")
 		return nil
 	}
-	return s.enqueue(queuedItem{key: instanceKey(manifest.GetServiceName(), manifest.GetServiceInstanceId()), path: ingest.ManifestPath, body: body})
+	return s.enqueue(queuedItem{key: instanceKey(manifest.GetResource().GetServiceName(), manifest.GetResource().GetServiceInstanceId()), path: ingest.ManifestPath, body: body})
 }
 
 // AcceptStaticBaseline marshals baseline and queues it on the shard for

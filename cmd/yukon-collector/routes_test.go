@@ -26,7 +26,7 @@ import (
 func deltaRequest(t *testing.T, serverURL string) *http.Request {
 	t.Helper()
 	body, err := proto.Marshal(&yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	})
 	if err != nil {
 		t.Fatalf("marshal batch: %v", err)
@@ -45,7 +45,7 @@ func deltaRequest(t *testing.T, serverURL string) *http.Request {
 func staticBaselineRequest(t *testing.T, serverURL string) *http.Request {
 	t.Helper()
 	body, err := proto.Marshal(&yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkCount: 1,
 	})

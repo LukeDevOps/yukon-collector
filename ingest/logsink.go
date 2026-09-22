@@ -22,12 +22,14 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 	return &LogSink{logger: logger}
 }
 
-// AcceptDeltaBatch logs the batch's service identity, environment, delta
-// count, endpoint delta count, and dependency delta count. It never fails.
+// AcceptDeltaBatch logs the batch's service identity, run ID,
+// environment, delta count, endpoint delta count, and dependency delta
+// count. It never fails.
 func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"service", batch.GetResource().GetServiceName(),
 		"instance", batch.GetResource().GetServiceInstanceId(),
+		"run", batch.GetResource().GetRunId(),
 		"environment", batch.GetResource().GetEnvironment(),
 		"deltas", len(batch.GetDeltas()),
 		"endpoint_deltas", len(batch.GetEndpointDeltas()),
@@ -36,13 +38,16 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch)
 	return nil
 }
 
-// AcceptManifest logs the manifest's service name, probe counts, call edge
-// and supertype counts, endpoint count, disabled endpoint module count,
-// dependency and reference counts, and whether the instance records
-// references. It never fails.
+// AcceptManifest logs the manifest's service identity, run ID,
+// environment, probe counts, call edge and supertype counts, endpoint
+// count, disabled endpoint module count, dependency and reference
+// counts, and whether the instance records references. It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
-		"service", manifest.GetServiceName(),
+		"service", manifest.GetResource().GetServiceName(),
+		"instance", manifest.GetResource().GetServiceInstanceId(),
+		"run", manifest.GetResource().GetRunId(),
+		"environment", manifest.GetResource().GetEnvironment(),
 		"probes", len(manifest.GetProbes()),
 		"call_edges", callEdgeCount(manifest.GetProbes()),
 		"class_supertypes", len(manifest.GetClassSupertypes()),
@@ -58,13 +63,14 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManif
 	return nil
 }
 
-// AcceptStaticBaseline logs the baseline's service identity,
+// AcceptStaticBaseline logs the baseline's service identity, run ID,
 // environment, scan identity, chunk position, and class counts. It never
 // fails.
 func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
 	s.logger.Info("received static baseline",
 		"service", baseline.GetResource().GetServiceName(),
 		"instance", baseline.GetResource().GetServiceInstanceId(),
+		"run", baseline.GetResource().GetRunId(),
 		"environment", baseline.GetResource().GetEnvironment(),
 		"scanned_at", baseline.GetScannedAt(),
 		"chunk", baseline.GetChunkIndex(),

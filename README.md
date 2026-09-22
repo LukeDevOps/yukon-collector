@@ -27,17 +27,19 @@ yukon agent  --POST protobuf-->  yukon-collector  -->  Sink
 ```
 
 The agent's `HttpOtlpStyleExporter` posts three payload types, matching
-the paths this collector serves:
+the paths this collector serves. Each one carries the same resource
+attributes: service name, version, instance ID, environment, and a run
+ID. The agent makes a fresh random run ID for each process, so an
+instance restarted under a pinned instance ID still names a different run.
 
-- `POST /v1/yukon/deltas` — a `DeltaBatch`: resource attributes
-  (service name, version, instance ID) plus per-probe hit counts since the
-  last successful flush. Sent every flush interval even when empty, as a
+- `POST /v1/yukon/deltas` — a `DeltaBatch`: resource attributes plus
+  per-probe hit counts since the last successful flush. Sent every flush interval even when empty, as a
   liveness heartbeat — an idle instance and a dead one both need to be
   distinguishable from silence. It also carries endpoint hit totals, one
   entry per HTTP endpoint a web framework has matched a request to.
-- `POST /v1/yukon/manifest` — a `ProbeManifest`: maps probe IDs to their
-  source location (class, method, line, branch index), sent incrementally
-  so the collector only needs metadata for probes it hasn't already seen.
+- `POST /v1/yukon/manifest` — a `ProbeManifest`: resource attributes
+  plus a map from probe IDs to their source location (class, method,
+  line, branch index), sent incrementally so the collector only needs metadata for probes it hasn't already seen.
   It also carries the endpoints a web framework serves and any endpoint
   module that switched itself off after a linkage failure against a
   framework version it does not match.
@@ -64,10 +66,11 @@ repo and is published to the Buf Schema Registry as
   step in this repo.
 - `ingest.Handler` — decodes the three payload types above and
   hands each to a `Sink`. Rejects malformed bodies, and decoded ones
-  missing the service name or instance ID a backend needs to attribute
-  them, with `400` before they reach the sink; accepts valid ones with
-  `202`. A manifest is rejected without its instance ID too, since
-  `class_id` is only meaningful within one running instance.
+  whose resource lacks the service name, instance ID or run ID a backend
+  needs to attribute them, with `400` before they reach the sink; accepts
+  valid ones with `202`. All three payloads are checked the same way,
+  since `class_id` and every cumulative total are only meaningful within
+  one run of one instance.
 - `ingest.Sink` — the seam a real backend implements. The
   collector has no storage of its own, so this interface is the entire
   contract between "decoded a payload" and "did something with it."
@@ -80,8 +83,10 @@ repo and is published to the Buf Schema Registry as
 - `internal/forward` — `ForwardingSink` relays each decoded payload to a
   backend over the same protobuf-over-HTTP shape the collector accepts,
   the way an OTel Collector exporter re-sends OTLP downstream. Payloads
-  are queued and sent by background workers, sharded by service identity
-  so one instance's failing backend calls can't hold up another's, with
+  are queued and sent by background workers, sharded by service name
+  and instance ID so one instance's failing backend calls can't hold up
+  another's. The run ID is left out of the shard key, so a restarted
+  instance keeps its shard and its payloads stay in order. Retries use
   time-bounded exponential backoff on `429`/`502`/`503`/`504`. A full
   shard queue refuses the payload with `503` instead of queuing it, so
   the agent sends it again.
@@ -112,11 +117,12 @@ YUKON_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/yukon-collector
 
 Listens on `:4319` by default; set `YUKON_COLLECTOR_ADDR` to change that.
 Point the yukon agent's `collectorEndpoint` at it, or send a payload by
-hand. This posts a `DeltaBatch` for service `demo`, instance `i1`, with
-no probe deltas (the same shape the agent sends as an idle heartbeat):
+hand. This posts a `DeltaBatch` for service `demo`, instance `i1`, run
+`r1`, with no probe deltas (the same shape the agent sends as an idle
+heartbeat):
 
 ```
-printf '\x0a\x0a\x0a\x04demo\x1a\x02i1' | curl -s -o /dev/null -w '%{http_code}\n' \
+printf '\x0a\x0e\x0a\x04demo\x1a\x02i1\x2a\x02r1' | curl -s -o /dev/null -w '%{http_code}\n' \
   -X POST http://localhost:4319/v1/yukon/deltas \
   -H 'Content-Type: application/x-protobuf' --data-binary @-
 ```
@@ -211,7 +217,7 @@ probes.
 | `yukon_collector_forward_retries_total` | `payload` | Attempts made after a retryable failure |
 | `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
 | `yukon_collector_forward_refused_total` | `payload`, `reason` | Not taken and answered `503` so the sender sends it again: `queue_full`, `shutting_down` |
-| `yukon_collector_environment_mismatch_total` | `payload` | The agent's environment differed from the collector's configured one (see [Environment](#environment)); `payload` is `deltas` or `static_baseline` only, since a manifest carries no environment field |
+| `yukon_collector_environment_mismatch_total` | `payload` | The agent's environment differed from the collector's configured one (see [Environment](#environment)); `payload` is `deltas`, `manifest`, or `static_baseline` |
 
 `payload` is `deltas`, `manifest`, or `static_baseline`. The dropped
 counter is the one to alert on: every increment is agent data that never
@@ -288,7 +294,7 @@ usually runs one collector per environment, so the collector can label
 every payload that passes through it, with no change to any JVM's config.
 
 Set `YUKON_COLLECTOR_ENVIRONMENT` to the environment name to stamp onto
-every delta batch and static baseline the collector ingests:
+every delta batch, manifest and static baseline the collector ingests:
 
 ```
 YUKON_COLLECTOR_ENVIRONMENT=prod go run ./cmd/yukon-collector
@@ -304,13 +310,9 @@ already names an environment:
 
 When the agent's value differs from the collector's, that is a mismatch:
 `yukon_collector_environment_mismatch_total` goes up under either action,
-and a `debug` log line names the service and instance involved. A
+and a `debug` log line names the service, instance and run involved. A
 non-zero count means some JVM is configured for a different environment
 than the collector it reports to.
-
-A manifest carries no environment field, so it always passes through
-unchanged; a backend learns an instance's environment from its delta
-batches instead.
 
 Setting `YUKON_COLLECTOR_ENVIRONMENT_ACTION` without also setting
 `YUKON_COLLECTOR_ENVIRONMENT` is a misconfiguration and stops the

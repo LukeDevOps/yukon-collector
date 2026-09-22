@@ -123,6 +123,7 @@ func TestIntegration_DeltaBatch_RoundTripsThroughRealHandlerOnBothEnds(t *testin
 		Resource: &yukonpb.ResourceAttributes{
 			ServiceName:       "checkout",
 			ServiceInstanceId: "instance-7",
+			RunId:             "run-1",
 		},
 		Deltas: []*yukonpb.ProbeDelta{
 			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, HitsTotal: 42},
@@ -162,8 +163,7 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 	defer front.Close()
 
 	sent := &yukonpb.ProbeManifest{
-		ServiceName:       "checkout",
-		ServiceInstanceId: "instance-7",
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7", RunId: "run-1"},
 		Probes: []*yukonpb.ProbeLocation{
 			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, ClassName: "CheckoutService", MethodName: "applyDiscount"},
 			{
@@ -239,7 +239,7 @@ func TestIntegration_StaticBaseline_RoundTripsThroughRealHandlerOnBothEnds(t *te
 	front := newFrontCollector(t, backend.URL)
 	defer front.Close()
 
-	resource := &yukonpb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7"}
+	resource := &yukonpb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7", RunId: "run-1"}
 	const scannedAt = 1700000000
 
 	chunk0 := &yukonpb.StaticBaseline{

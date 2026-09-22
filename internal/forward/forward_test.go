@@ -59,7 +59,7 @@ func mustNewSink(t *testing.T, cfg Config) *ForwardingSink {
 }
 
 func manifestWithService(name string) *yukonpb.ProbeManifest {
-	return &yukonpb.ProbeManifest{ServiceName: name, ServiceInstanceId: "instance-1"}
+	return &yukonpb.ProbeManifest{Resource: &yukonpb.ResourceAttributes{ServiceName: name, ServiceInstanceId: "instance-1", RunId: "run-1"}}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
@@ -114,8 +114,8 @@ func TestForwardingSink_Manifest_RelayedToBackendPath(t *testing.T) {
 	if err := proto.Unmarshal(gotBody, &manifest); err != nil {
 		t.Fatalf("unmarshal relayed body: %v", err)
 	}
-	if manifest.GetServiceName() != "demo-service" {
-		t.Errorf("relayed service name = %q, want %q", manifest.GetServiceName(), "demo-service")
+	if manifest.GetResource().GetServiceName() != "demo-service" {
+		t.Errorf("relayed service name = %q, want %q", manifest.GetResource().GetServiceName(), "demo-service")
 	}
 }
 
@@ -134,7 +134,7 @@ func TestForwardingSink_DeltaBatch_RelayedToBackendPath(t *testing.T) {
 	defer sink.Shutdown(context.Background())
 
 	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	})
 
 	waitFor(t, time.Second, received.Load)
@@ -161,7 +161,7 @@ func TestForwardingSink_StaticBaseline_RelayedToBackendPath(t *testing.T) {
 	defer sink.Shutdown(context.Background())
 
 	sent := &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkIndex: 1,
 		ChunkCount: 2,
@@ -322,6 +322,56 @@ func TestForwardingSink_QueueFull_RefusesNewestWithoutBlocking(t *testing.T) {
 	}
 }
 
+// TestForwardingSink_RunIdChange_KeepsInstanceOnItsShard sends one
+// instance's three payload types under three run IDs. With the run ID in
+// the shard key, these three would hash to three different shards out of
+// 16, and none would be refused. On one shard with a queue of one, the
+// third finds the queue full.
+func TestForwardingSink_RunIdChange_KeepsInstanceOnItsShard(t *testing.T) {
+	blockBackend := make(chan struct{})
+	entered := make(chan struct{}, 3)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		<-blockBackend
+		w.WriteHeader(http.StatusOK)
+	}))
+	// t.Cleanup, not defer: see the comment in the queue-full test above.
+	t.Cleanup(backend.Close)
+
+	cfg := testConfig(backend.URL)
+	cfg.Shards = 16
+	cfg.QueueSize = 1
+	cfg.RequestTimeout = time.Hour
+	sink := mustNewSink(t, cfg)
+	t.Cleanup(func() {
+		close(blockBackend)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		sink.Shutdown(ctx)
+	})
+
+	resource := func(runID string) *yukonpb.ResourceAttributes {
+		return &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "instance-1", RunId: runID}
+	}
+
+	if err := sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{Resource: resource("run-a")}); err != nil {
+		t.Fatalf("delta batch: unexpected error: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("backend never received the delta batch")
+	}
+	if err := sink.AcceptManifest(context.Background(), &yukonpb.ProbeManifest{Resource: resource("run-b")}); err != nil {
+		t.Fatalf("manifest: unexpected error: %v", err)
+	}
+	baseline := &yukonpb.StaticBaseline{Resource: resource("run-c"), ScannedAt: 1700000000, ChunkCount: 1}
+	if err := sink.AcceptStaticBaseline(context.Background(), baseline); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("static baseline error = %v, want it to wrap ErrQueueFull (all three runs share one shard)", err)
+	}
+}
+
 func TestForwardingSink_DifferentShards_OneStuckDoesNotBlockAnother(t *testing.T) {
 	const numShards = 4
 	keyA, keyB := findKeysInDifferentShards(t, numShards)
@@ -333,7 +383,7 @@ func TestForwardingSink_DifferentShards_OneStuckDoesNotBlockAnother(t *testing.T
 		var manifest yukonpb.ProbeManifest
 		body, _ := io.ReadAll(r.Body)
 		_ = proto.Unmarshal(body, &manifest)
-		if manifest.GetServiceName() == keyA {
+		if manifest.GetResource().GetServiceName() == keyA {
 			<-blockA
 			w.WriteHeader(http.StatusOK)
 			return
@@ -425,8 +475,8 @@ func findKeysInDifferentShards(t *testing.T, numShards int) (string, string) {
 	for i := range candidates {
 		for j := i + 1; j < len(candidates); j++ {
 			a, b := manifestWithService(candidates[i]), manifestWithService(candidates[j])
-			keyA := instanceKey(a.GetServiceName(), a.GetServiceInstanceId())
-			keyB := instanceKey(b.GetServiceName(), b.GetServiceInstanceId())
+			keyA := instanceKey(a.GetResource().GetServiceName(), a.GetResource().GetServiceInstanceId())
+			keyB := instanceKey(b.GetResource().GetServiceName(), b.GetResource().GetServiceInstanceId())
 			if shardIndex(keyA, numShards) != shardIndex(keyB, numShards) {
 				return candidates[i], candidates[j]
 			}
@@ -560,7 +610,7 @@ func TestForwardingSink_DropLog_NamesTheService(t *testing.T) {
 	sink := mustNewSink(t, cfg)
 
 	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"},
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	})
 	sink.Shutdown(context.Background())
 

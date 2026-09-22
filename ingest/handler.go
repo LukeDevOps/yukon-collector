@@ -156,12 +156,14 @@ func (h *Handler) handleStaticBaseline(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// validateDeltaBatch checks the fields a Sink needs to attribute the
-// batch. The agent always sends them, even on an empty heartbeat batch,
-// so a batch without them is a broken or foreign sender, not a quiet
-// instance.
-func validateDeltaBatch(batch *yukonpb.DeltaBatch) error {
-	res := batch.GetResource()
+// validateResource checks the resource every payload carries: the
+// service name, instance ID and run ID a Sink needs to attribute the
+// payload. class_id and every cumulative total mean something only
+// within one run of one instance. The agent makes a fresh run ID per
+// process, so an instance restarted under a pinned instance ID still
+// names a different run. An empty run_id means the sender did not set
+// it.
+func validateResource(res *yukonpb.ResourceAttributes) error {
 	if res == nil {
 		return errors.New("missing resource")
 	}
@@ -171,38 +173,36 @@ func validateDeltaBatch(batch *yukonpb.DeltaBatch) error {
 	if res.GetServiceInstanceId() == "" {
 		return errors.New("resource.service_instance_id is empty")
 	}
+	if res.GetRunId() == "" {
+		return errors.New("resource.run_id is empty")
+	}
 	return nil
 }
 
-// validateManifest checks that the manifest names the service and
-// instance it describes. class_id is assigned per instance in load
-// order, so the same class_id can mean a different class in two
-// instances of the same service; without the instance ID a backend
-// keying on service name alone would misattribute probes.
+// validateDeltaBatch checks the resource a Sink needs to attribute the
+// batch. The agent always sends it, even on an empty heartbeat batch,
+// so a batch without it is a broken or foreign sender, not a quiet
+// instance.
+func validateDeltaBatch(batch *yukonpb.DeltaBatch) error {
+	return validateResource(batch.GetResource())
+}
+
+// validateManifest checks that the manifest's resource names the
+// service, instance and run it describes. class_id is assigned per
+// run in load order, so the same class_id can mean a different class in
+// two instances of the same service, or in two runs of one instance. A
+// backend that keys on less than all three would misattribute probes.
 func validateManifest(manifest *yukonpb.ProbeManifest) error {
-	if manifest.GetServiceName() == "" {
-		return errors.New("service_name is empty")
-	}
-	if manifest.GetServiceInstanceId() == "" {
-		return errors.New("service_instance_id is empty")
-	}
-	return nil
+	return validateResource(manifest.GetResource())
 }
 
 // validateStaticBaseline checks the fields a backend cannot do without:
-// the service identity and scanned_at name the scan, and the chunk
-// fields say whether the scan is complete. A chunk missing any of them
-// can never be attributed or diffed.
+// the resource and scanned_at name the scan, and the chunk fields say
+// whether the scan is complete. A chunk missing any of them can never be
+// attributed or diffed.
 func validateStaticBaseline(baseline *yukonpb.StaticBaseline) error {
-	res := baseline.GetResource()
-	if res == nil {
-		return errors.New("missing resource")
-	}
-	if res.GetServiceName() == "" {
-		return errors.New("resource.service_name is empty")
-	}
-	if res.GetServiceInstanceId() == "" {
-		return errors.New("resource.service_instance_id is empty")
+	if err := validateResource(baseline.GetResource()); err != nil {
+		return err
 	}
 	if baseline.GetScannedAt() <= 0 {
 		return errors.New("scanned_at is not set")
