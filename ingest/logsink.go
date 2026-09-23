@@ -50,7 +50,7 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManif
 		"environment", manifest.GetResource().GetEnvironment(),
 		"probes", len(manifest.GetProbes()),
 		"call_edges", callEdgeCount(manifest.GetProbes()),
-		"class_supertypes", len(manifest.GetClassSupertypes()),
+		"class_locations", len(manifest.GetClassLocations()),
 		"skipped_classes", len(manifest.GetSkippedClasses()),
 		"endpoints", len(manifest.GetEndpoints()),
 		"disabled_endpoint_modules", len(manifest.GetDisabledEndpointModules()),

@@ -174,7 +174,7 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 				ReferencedClasses: []string{"tools.jackson.databind.json.JsonMapper"},
 			},
 		},
-		ClassSupertypes: []*yukonpb.ClassSupertypes{
+		ClassLocations: []*yukonpb.ClassLocation{
 			{ClassId: 3, SuperClassName: "java.lang.Object", InterfaceNames: []string{"Service"}},
 		},
 		Endpoints: []*yukonpb.EndpointLocation{
