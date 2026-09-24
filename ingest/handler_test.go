@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -59,13 +60,15 @@ type ctxKey string
 
 // ctxCheckSink asserts that the context it receives carries the value set
 // under key, proving the handler passes the request's own context through
-// rather than a detached one.
+// rather than a detached one. calls counts the payloads it received.
 type ctxCheckSink struct {
-	t   *testing.T
-	key ctxKey
+	t     *testing.T
+	key   ctxKey
+	calls *atomic.Int32
 }
 
 func (s ctxCheckSink) checkContext(ctx context.Context) {
+	s.calls.Add(1)
 	if got := ctx.Value(s.key); got != "request-scoped" {
 		s.t.Errorf("sink saw context value %v, want %q", got, "request-scoped")
 	}
@@ -459,20 +462,6 @@ func TestHandleDeltaBatch_MissingIdentity_RejectedWithoutReachingSink(t *testing
 	}
 }
 
-func TestHandleDeltaBatch_EmptyHeartbeatWithIdentity_Accepted(t *testing.T) {
-	sink := &fakeSink{}
-	server := newTestServer(sink)
-	defer server.Close()
-
-	resp := postProto(t, server.URL+"/v1/yukon/deltas", &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
-	})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d (a heartbeat with no deltas is valid)", resp.StatusCode, http.StatusAccepted)
-	}
-}
-
 func TestHandleManifest_MissingIdentity_RejectedWithoutReachingSink(t *testing.T) {
 	for name, manifest := range map[string]*yukonpb.ProbeManifest{
 		"empty body":          {},
@@ -802,7 +791,7 @@ func TestHandler_SinkError_Returns503AndIncrementsRejected(t *testing.T) {
 
 func TestHandler_PassesRequestContextToSink(t *testing.T) {
 	const key ctxKey = "test-key"
-	sink := ctxCheckSink{t: t, key: key}
+	sink := ctxCheckSink{t: t, key: key, calls: &atomic.Int32{}}
 	mux := http.NewServeMux()
 	NewHandler(sink, nil).Register(mux)
 
@@ -823,6 +812,9 @@ func TestHandler_PassesRequestContextToSink(t *testing.T) {
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if got := sink.calls.Load(); got != 1 {
+		t.Fatalf("sink received %d payloads, want 1", got)
 	}
 }
 

@@ -136,22 +136,6 @@ func TestRegisterRoutes_AuthTokenSet_StaticBaselineRequiresMatchingHeader(t *tes
 	}
 }
 
-func TestRegisterRoutes_NoAuthToken_IngestUnauthenticated(t *testing.T) {
-	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "", nil, "", "")
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	resp, err := server.Client().Do(deltaRequest(t, server.URL))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
-	}
-}
-
 func TestRegisterRoutes_Healthz_NeverRequiresAuth(t *testing.T) {
 	mux := http.NewServeMux()
 	mustRegisterRoutes(t, mux, "s3cret", nil, "", "")

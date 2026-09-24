@@ -634,6 +634,7 @@ func TestNewHTTPClient_IdleConnsMatchShardCount(t *testing.T) {
 }
 
 func TestForwardingSink_LargeResponseBody_DoesNotBlockDelivery(t *testing.T) {
+	deliveredBefore := metrics.ForwardDelivered.Value("manifest")
 	var received atomic.Bool
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Store(true)
@@ -662,8 +663,8 @@ func TestForwardingSink_LargeResponseBody_DoesNotBlockDelivery(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Shutdown did not return; the worker is likely still reading the oversized response")
 	}
-	if got := metrics.ForwardDelivered.Value("manifest"); got < 1 {
-		t.Fatalf("delivered count = %d, want at least 1 (a 200 with a big body is still a success)", got)
+	if got := metrics.ForwardDelivered.Value("manifest"); got != deliveredBefore+1 {
+		t.Fatalf("delivered count = %d, want %d (a 200 with a big body is still a success)", got, deliveredBefore+1)
 	}
 }
 
