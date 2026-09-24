@@ -92,7 +92,7 @@ repo and is published to the Buf Schema Registry as
   the agent sends it again.
 - `internal/processor` — sinks that wrap another sink, changing or
   inspecting a decoded payload before passing it on: the role an OTel
-  Collector processor plays. One exists, `Environment`.
+  Collector processor plays. Two exist, `Environment` and `Redaction`.
 - `internal/auth` — a shared-secret bearer-token check, wrapped around the
   ingest routes as HTTP middleware. Kept separate from `ingest.Handler` so
   the decode layer stays auth-agnostic.
@@ -218,6 +218,7 @@ probes.
 | `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
 | `yukon_collector_forward_refused_total` | `payload`, `reason` | Not taken and answered `503` so the sender sends it again: `queue_full`, `shutting_down` |
 | `yukon_collector_environment_mismatch_total` | `payload` | The agent's environment differed from the collector's configured one (see [Environment](#environment)); `payload` is `deltas`, `manifest`, or `static_baseline` |
+| `yukon_collector_redacted_literals_total` | `payload` | String literal parts replaced by the redaction processor (see [Redaction](#redaction)); `payload` is `manifest` or `static_baseline` |
 
 `payload` is `deltas`, `manifest`, or `static_baseline`. The dropped
 counter is the one to alert on: every increment is agent data that never
@@ -317,6 +318,54 @@ than the collector it reports to.
 Setting `YUKON_COLLECTOR_ENVIRONMENT_ACTION` without also setting
 `YUKON_COLLECTOR_ENVIRONMENT` is a misconfiguration and stops the
 collector at startup.
+
+### Redaction
+
+A branch site's condition and a string `switch`'s case labels can hold
+the adopter's own string literals, such as
+`System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"`. The collector runs
+inside the adopter's network, so it is the last place to hide them before
+they leave. The redaction processor does that. See
+[ADR 0001](docs/adr/0001-a-redaction-processor-hides-literals-before-they-leave.md).
+
+The agent sends each condition and case label as a list of parts, each
+marked as code, string literal or placeholder. The processor looks only
+at string literal parts, in manifests and static baselines. A redacted
+part keeps its kind, and its text becomes `…`. Code parts, placeholders,
+and class, method and file names are never changed, since the pipeline
+needs the names. Branch and site keys are not changed either. They still
+digest the literal, so someone who holds the keys and the rest of a
+condition can test guesses at a weak secret offline.
+
+Two settings turn it on. Both are off by default.
+
+| Variable | Meaning |
+| --- | --- |
+| `YUKON_COLLECTOR_REDACT_BLOCKED_VALUES` | Regular expressions in Go syntax, one per line, since a comma can appear inside a pattern. A literal that any of them matches anywhere in its text is redacted. Anchor a pattern with `^` and `$` to match the whole literal. Blank lines are ignored. |
+| `YUKON_COLLECTOR_REDACT_ALL_LITERALS` | `1` or `true` redacts every string literal. |
+
+```
+YUKON_COLLECTOR_REDACT_BLOCKED_VALUES='(?i)password|secret|token
+^sk_live_' \
+go run ./cmd/yukon-collector
+```
+
+A pattern that does not compile stops the collector at startup with the
+variable and the pattern's line named. So does a value for
+`YUKON_COLLECTOR_REDACT_ALL_LITERALS` that does not parse as a boolean.
+`yukon_collector_redacted_literals_total` counts the parts replaced, and a
+`debug` log line names the service, instance, run and count for each
+payload that had any. Neither ever includes a literal's text.
+
+While either setting is on, the collector also drops every field it does
+not know from every payload, delta batches included. Go keeps unknown
+fields when it re-encodes a message for forwarding. An agent built
+against a newer schema than this collector could send a new field that
+carries a literal, and the collector would forward it unseen. The cost is
+that a newer agent's new fields are lost until the collector is updated.
+
+Redaction happens only here. An agent that posts straight to a backend,
+with no collector in between, sends literals in clear.
 
 ## Development
 

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -87,8 +88,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	redactCfg, err := resolveRedaction(os.Getenv("YUKON_COLLECTOR_REDACT_BLOCKED_VALUES"), os.Getenv("YUKON_COLLECTOR_REDACT_ALL_LITERALS"))
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
-	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg, envCfg)
+	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg, envCfg, redactCfg)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -292,4 +299,37 @@ func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig
 	}
 
 	return processor.EnvironmentConfig{Value: value, Action: action}, nil
+}
+
+// resolveRedaction builds the processor.RedactionConfig from
+// YUKON_COLLECTOR_REDACT_BLOCKED_VALUES and
+// YUKON_COLLECTOR_REDACT_ALL_LITERALS. The first holds one regular
+// expression per line, since a comma can appear inside a pattern. A line
+// that is blank after trimming space is skipped. Other lines are used as
+// written, apart from a trailing carriage return. A pattern that does not
+// compile is an error that names its line. The second is a boolean in
+// strconv.ParseBool syntax. An unparsable value is an error, so a typo
+// cannot leave redaction off.
+func resolveRedaction(blockedRaw, allLiteralsRaw string) (processor.RedactionConfig, error) {
+	var cfg processor.RedactionConfig
+	for i, line := range strings.Split(blockedRaw, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		re, err := regexp.Compile(line)
+		if err != nil {
+			return processor.RedactionConfig{}, fmt.Errorf("YUKON_COLLECTOR_REDACT_BLOCKED_VALUES line %d: %w", i+1, err)
+		}
+		cfg.BlockedValues = append(cfg.BlockedValues, re)
+	}
+
+	if allLiteralsRaw != "" {
+		all, err := strconv.ParseBool(allLiteralsRaw)
+		if err != nil {
+			return processor.RedactionConfig{}, fmt.Errorf("YUKON_COLLECTOR_REDACT_ALL_LITERALS: %w", err)
+		}
+		cfg.AllLiterals = all
+	}
+	return cfg, nil
 }

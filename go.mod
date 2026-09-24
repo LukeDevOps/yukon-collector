@@ -6,6 +6,6 @@ toolchain go1.26.6
 
 require google.golang.org/protobuf v1.36.12
 
-require buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260924081142-084ba94bc0de.2
+require buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260924225937-af331e73c211.2
 
 require golang.org/x/time v0.16.0

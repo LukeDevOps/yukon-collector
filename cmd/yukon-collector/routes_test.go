@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/time/rate"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
@@ -71,7 +73,14 @@ func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limi
 // envCfg, for tests that care how the environment processor behaves.
 func mustRegisterRoutesWithEnv(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string, envCfg processor.EnvironmentConfig) *forward.ForwardingSink {
 	t.Helper()
-	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken}, envCfg)
+	return mustRegisterRoutesWithProcessors(t, mux, forwardURL, envCfg, processor.RedactionConfig{}, authToken, limiter, forwardAuthToken)
+}
+
+// mustRegisterRoutesWithProcessors is mustRegisterRoutes with explicit
+// processor configs.
+func mustRegisterRoutesWithProcessors(t *testing.T, mux *http.ServeMux, forwardURL string, envCfg processor.EnvironmentConfig, redactCfg processor.RedactionConfig, authToken string, limiter *ratelimit.Limiter, forwardAuthToken string) *forward.ForwardingSink {
+	t.Helper()
+	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken}, envCfg, redactCfg)
 	if err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
@@ -252,7 +261,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 
 func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}); err == nil {
+	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}, processor.RedactionConfig{}); err == nil {
 		t.Fatal("expected an error for an unusable forward URL, got nil")
 	}
 }
@@ -323,5 +332,110 @@ func TestRegisterRoutes_EnvironmentConfigSet_StampsForwardedDeltaBatch(t *testin
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the backend to receive the forwarded batch")
+	}
+}
+
+// manifestWithLiteral is the smallest manifest the handler accepts, with
+// one probe whose branch site tests a string literal. Its top-level
+// message and its branch site each carry a field no schema version
+// declares.
+func manifestWithLiteral() *yukonpb.ProbeManifest {
+	unknown := protowire.AppendString(protowire.AppendTag(nil, 9999, protowire.BytesType), "a newer literal")
+	site := &yukonpb.BranchSite{Condition: []*yukonpb.ConditionPart{
+		{Kind: yukonpb.ConditionPartKind_CODE, Text: "System.getenv("},
+		{Kind: yukonpb.ConditionPartKind_STRING_LITERAL, Text: "ENABLE_LEGACY_DISCOUNT"},
+		{Kind: yukonpb.ConditionPartKind_CODE, Text: ")"},
+	}}
+	site.ProtoReflect().SetUnknown(unknown)
+	manifest := &yukonpb.ProbeManifest{
+		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+		Probes:   []*yukonpb.ProbeLocation{{ClassName: "com.example.Pricing", MethodName: "price", BranchSites: []*yukonpb.BranchSite{site}}},
+	}
+	manifest.ProtoReflect().SetUnknown(unknown)
+	return manifest
+}
+
+// forwardManifest posts manifestWithLiteral to a collector wired with
+// redactCfg and returns the manifest its backend received.
+func forwardManifest(t *testing.T, redactCfg processor.RedactionConfig) *yukonpb.ProbeManifest {
+	t.Helper()
+	received := make(chan *yukonpb.ProbeManifest, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read forwarded body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var manifest yukonpb.ProbeManifest
+		if err := proto.Unmarshal(body, &manifest); err != nil {
+			t.Errorf("unmarshal forwarded body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		received <- &manifest
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	mux := http.NewServeMux()
+	fwd := mustRegisterRoutesWithProcessors(t, mux, backend.URL, processor.EnvironmentConfig{}, redactCfg, "", nil, "")
+	defer fwd.Shutdown(context.Background())
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	body, err := proto.Marshal(manifestWithLiteral())
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/x-protobuf", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+
+	select {
+	case manifest := <-received:
+		return manifest
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the backend to receive the forwarded manifest")
+		return nil
+	}
+}
+
+func TestRegisterRoutes_RedactionOn_ForwardsManifestRedactedWithoutUnknownFields(t *testing.T) {
+	manifest := forwardManifest(t, processor.RedactionConfig{BlockedValues: []*regexp.Regexp{regexp.MustCompile("LEGACY")}})
+
+	site := manifest.GetProbes()[0].GetBranchSites()[0]
+	if got := site.GetCondition()[1].GetText(); got != processor.RedactedText {
+		t.Fatalf("forwarded literal = %q, want %q", got, processor.RedactedText)
+	}
+	if got := site.GetCondition()[0].GetText(); got != "System.getenv(" {
+		t.Fatalf("forwarded code part = %q, want it unchanged", got)
+	}
+	if n := len(manifest.ProtoReflect().GetUnknown()); n != 0 {
+		t.Fatalf("forwarded manifest has %d unknown bytes, want 0", n)
+	}
+	if n := len(site.ProtoReflect().GetUnknown()); n != 0 {
+		t.Fatalf("forwarded branch site has %d unknown bytes, want 0", n)
+	}
+}
+
+func TestRegisterRoutes_RedactionOff_ForwardsManifestWithLiteralAndUnknownFields(t *testing.T) {
+	manifest := forwardManifest(t, processor.RedactionConfig{})
+
+	site := manifest.GetProbes()[0].GetBranchSites()[0]
+	if got := site.GetCondition()[1].GetText(); got != "ENABLE_LEGACY_DISCOUNT" {
+		t.Fatalf("forwarded literal = %q, want it unchanged", got)
+	}
+	if len(manifest.ProtoReflect().GetUnknown()) == 0 {
+		t.Fatal("forwarded manifest lost its unknown field, want it passed through")
+	}
+	if len(site.ProtoReflect().GetUnknown()) == 0 {
+		t.Fatal("forwarded branch site lost its unknown field, want it passed through")
 	}
 }

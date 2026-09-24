@@ -33,7 +33,12 @@ import (
 // chosen sink and writes that environment onto delta batches and static
 // baselines before the sink sees them. A zero envCfg leaves payloads
 // untouched.
-func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig) (*forward.ForwardingSink, error) {
+//
+// When redactCfg is enabled, a processor.Redaction wraps the sink outside
+// the environment processor. It hides string literals and drops unknown
+// fields before any payload is forwarded. A zero redactCfg leaves it out
+// of the chain.
+func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig, redactCfg processor.RedactionConfig) (*forward.ForwardingSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -55,6 +60,11 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	if envCfg.Value != "" {
 		logger.Info("stamping environment on ingested payloads", "environment", envCfg.Value, "action", envCfg.Action)
 		sink = processor.NewEnvironment(sink, envCfg, logger)
+	}
+	if redactCfg.Enabled() {
+		logger.Info("redacting string literals in ingested payloads",
+			"blocked_values", len(redactCfg.BlockedValues), "all_literals", redactCfg.AllLiterals)
+		sink = processor.NewRedaction(sink, redactCfg, logger)
 	}
 	handler := ingest.NewHandler(sink, logger)
 

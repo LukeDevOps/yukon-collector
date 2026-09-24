@@ -47,4 +47,9 @@ var (
 	// "deltas", "manifest" or "static_baseline".
 	EnvironmentMismatch = NewCounter("yukon_collector_environment_mismatch_total",
 		"Payloads whose agent-set environment differs from the collector's configured one.", "payload")
+
+	// RedactedLiterals counts string literal parts the redaction processor
+	// replaced. Its "payload" is "manifest" or "static_baseline".
+	RedactedLiterals = NewCounter("yukon_collector_redacted_literals_total",
+		"String literal parts replaced by the redaction processor.", "payload")
 )

@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,5 +278,75 @@ func TestResolveForwardConfig_BadValues_Error(t *testing.T) {
 		if _, err := resolveForwardConfig(envFrom(map[string]string{name: value})); err == nil {
 			t.Errorf("%s=%q: expected an error, got nil", name, value)
 		}
+	}
+}
+
+func TestResolveRedaction_Unset_Off(t *testing.T) {
+	cfg, err := resolveRedaction("", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Enabled() {
+		t.Fatalf("config = %+v, want redaction off", cfg)
+	}
+}
+
+func TestResolveRedaction_PatternsOnePerLine_BlankLinesIgnored(t *testing.T) {
+	cfg, err := resolveRedaction("\nLEGACY_[A-Z]+\n   \r\n(?i)secret,token\r\n\n", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got []string
+	for _, re := range cfg.BlockedValues {
+		got = append(got, re.String())
+	}
+	want := []string{"LEGACY_[A-Z]+", "(?i)secret,token"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("patterns = %q, want %q", got, want)
+	}
+	if cfg.AllLiterals {
+		t.Fatal("AllLiterals = true, want false")
+	}
+}
+
+func TestResolveRedaction_InvalidPattern_ErrorNamesVariableAndLine(t *testing.T) {
+	_, err := resolveRedaction("ok\n\nbad(", "")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	for _, want := range []string{"YUKON_COLLECTOR_REDACT_BLOCKED_VALUES", "line 3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+func TestResolveRedaction_AllLiterals(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"":      false,
+		"1":     true,
+		"true":  true,
+		"TRUE":  true,
+		"0":     false,
+		"false": false,
+	} {
+		cfg, err := resolveRedaction("", raw)
+		if err != nil {
+			t.Errorf("all literals %q: unexpected error: %v", raw, err)
+			continue
+		}
+		if cfg.AllLiterals != want {
+			t.Errorf("all literals %q = %v, want %v", raw, cfg.AllLiterals, want)
+		}
+	}
+}
+
+func TestResolveRedaction_AllLiteralsGarbage_Errors(t *testing.T) {
+	_, err := resolveRedaction("", "yes please")
+	if err == nil {
+		t.Fatal("expected an error for an unparsable boolean, got nil")
+	}
+	if !strings.Contains(err.Error(), "YUKON_COLLECTOR_REDACT_ALL_LITERALS") {
+		t.Fatalf("error %q does not name the variable", err)
 	}
 }
