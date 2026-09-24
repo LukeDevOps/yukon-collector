@@ -41,7 +41,8 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch)
 // AcceptManifest logs the manifest's service identity, run ID,
 // environment, probe counts, call edge and supertype counts, endpoint
 // count, disabled endpoint module count, dependency and reference
-// counts, and whether the instance records references. It never fails.
+// counts, whether the instance records references, and whether its
+// dependency listing is delivered. It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"service", manifest.GetResource().GetServiceName(),
@@ -59,6 +60,7 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManif
 		"class_references", len(manifest.GetClassReferences()),
 		"external_classes", len(manifest.GetExternalClasses()),
 		"references_recorded", manifest.GetReferencesRecorded(),
+		"dependencies_listed", manifest.GetDependenciesListed(),
 	)
 	return nil
 }

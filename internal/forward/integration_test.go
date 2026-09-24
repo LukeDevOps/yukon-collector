@@ -211,6 +211,7 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 			{ClassName: "org.example.Missing", Absent: true},
 		},
 		ReferencesRecorded: true,
+		DependenciesListed: true,
 	}
 	body, err := proto.Marshal(sent)
 	if err != nil {
