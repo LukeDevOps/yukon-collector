@@ -48,6 +48,12 @@ var (
 	EnvironmentMismatch = NewCounter("yukon_collector_environment_mismatch_total",
 		"Payloads whose agent-set environment differs from the collector's configured one.", "payload")
 
+	// NamespaceMismatch counts payloads whose agent-set service namespace
+	// differs from the collector's configured one. Its "payload" is
+	// "deltas", "manifest" or "static_baseline".
+	NamespaceMismatch = NewCounter("yukon_collector_namespace_mismatch_total",
+		"Payloads whose agent-set service namespace differs from the collector's configured one.", "payload")
+
 	// RedactedLiterals counts string literal parts the redaction processor
 	// replaced. Its "payload" is "manifest" or "static_baseline".
 	RedactedLiterals = NewCounter("yukon_collector_redacted_literals_total",

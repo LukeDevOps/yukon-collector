@@ -1,5 +1,5 @@
-buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260924225937-af331e73c211.2 h1:BJKRe8t60GslxxkysKGXgnrhpfuqPQENxunjXqZrY40=
-buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260924225937-af331e73c211.2/go.mod h1:Gl7akXnkPWkefrC8UCNUz7yQNXqHB/aQoCNinamVa5Y=
+buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260926123519-5d995a2c93ed.2 h1:Vr7r/SVLUkM5UDe1GF6IFloDYBb2rp77PZPGeZggMlc=
+buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260926123519-5d995a2c93ed.2/go.mod h1:Gl7akXnkPWkefrC8UCNUz7yQNXqHB/aQoCNinamVa5Y=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 golang.org/x/time v0.16.0 h1:vMb6ptszcQMkcwiRTAuNNU50gom6++Q/6gY2hDM6VDE=

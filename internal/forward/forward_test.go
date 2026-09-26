@@ -310,7 +310,7 @@ func TestForwardingSink_QueueFull_RefusesNewestWithoutBlocking(t *testing.T) {
 	if !errors.Is(errs[2], ErrQueueFull) {
 		t.Fatalf("third Accept error = %v, want it to wrap ErrQueueFull", errs[2])
 	}
-	if !strings.Contains(errs[2].Error(), "svc/instance-1") {
+	if !strings.Contains(errs[2].Error(), `service "svc" instance "instance-1"`) {
 		t.Fatalf("third Accept error = %q, want it to name the service", errs[2])
 	}
 
@@ -475,8 +475,8 @@ func findKeysInDifferentShards(t *testing.T, numShards int) (string, string) {
 	for i := range candidates {
 		for j := i + 1; j < len(candidates); j++ {
 			a, b := manifestWithService(candidates[i]), manifestWithService(candidates[j])
-			keyA := instanceKey(a.GetResource().GetServiceName(), a.GetResource().GetServiceInstanceId())
-			keyB := instanceKey(b.GetResource().GetServiceName(), b.GetResource().GetServiceInstanceId())
+			keyA := instanceOf(a.GetResource()).shardKey()
+			keyB := instanceOf(b.GetResource()).shardKey()
 			if shardIndex(keyA, numShards) != shardIndex(keyB, numShards) {
 				return candidates[i], candidates[j]
 			}
@@ -609,13 +609,75 @@ func TestForwardingSink_DropLog_NamesTheService(t *testing.T) {
 	cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	sink := mustNewSink(t, cfg)
 
-	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
-	})
+	resource := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
+	resource.SetServiceNamespace("team-a")
+	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{Resource: resource})
 	sink.Shutdown(context.Background())
 
-	if got := logs.String(); !strings.Contains(got, "service=demo-service/instance-1") {
-		t.Fatalf("drop log does not name the service:\n%s", got)
+	got := logs.String()
+	for _, want := range []string{"namespace=team-a", "service=demo-service", "instance=instance-1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("drop log does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestInstance_ShardKey_DistinctInstancesNeverCollide(t *testing.T) {
+	instances := []instance{
+		{namespace: "a/b", service: "c", id: "d"},
+		{namespace: "a", service: "b/c", id: "d"},
+		{namespace: "a", service: "b", id: "c/d"},
+		{namespace: "", service: "a/b/c", id: "d"},
+		{namespace: "", service: "a", id: "b"},
+		{namespace: "a", service: "b", id: ""},
+		{namespace: "a", service: "", id: "b"},
+		{namespace: "", service: "a/b", id: ""},
+		{namespace: "1:a", service: "b", id: "c"},
+		{namespace: "1", service: "a1:b", id: "c"},
+		{namespace: "", service: "", id: "1:a1:b"},
+		{namespace: "a:", service: "b", id: "c"},
+		{namespace: "a", service: ":b", id: "c"},
+	}
+	seen := make(map[string]instance, len(instances))
+	for _, in := range instances {
+		key := in.shardKey()
+		if other, ok := seen[key]; ok {
+			t.Fatalf("%+v and %+v share the shard key %q", other, in, key)
+		}
+		seen[key] = in
+	}
+}
+
+func TestInstance_ShardKey_SameInstanceSameKey(t *testing.T) {
+	a := instanceOf(&yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"})
+	b := instanceOf(&yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-2"})
+	if a.shardKey() != b.shardKey() {
+		t.Fatalf("shard keys differ across runs of one instance: %q and %q", a.shardKey(), b.shardKey())
+	}
+}
+
+func TestInstance_ShardKey_NamespaceTellsInstancesApart(t *testing.T) {
+	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
+	unspecified := instanceOf(res).shardKey()
+	res.SetServiceNamespace("team-a")
+	if named := instanceOf(res).shardKey(); named == unspecified {
+		t.Fatalf("namespace %q and the unspecified namespace share the shard key %q", "team-a", named)
+	}
+}
+
+func TestInstance_ShardKey_SurroundingSpacesKeepOneKey(t *testing.T) {
+	trimmed := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
+	trimmed.SetServiceNamespace("team-a")
+	padded := &yukonpb.ResourceAttributes{ServiceName: " svc ", ServiceInstanceId: "i1", RunId: "run-1"}
+	padded.SetServiceNamespace(" team-a ")
+	if a, b := instanceOf(trimmed).shardKey(), instanceOf(padded).shardKey(); a != b {
+		t.Fatalf("surrounding spaces split one service across shard keys %q and %q", a, b)
+	}
+}
+
+func TestInstanceOf_NilResource_ZeroInstance(t *testing.T) {
+	if got := instanceOf(nil); got != (instance{}) {
+		t.Fatalf("instanceOf(nil) = %+v, want the zero instance", got)
 	}
 }
 

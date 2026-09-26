@@ -30,15 +30,20 @@ import (
 // that cannot be used is returned as an error.
 //
 // When envCfg.Value is non-empty, a processor.Environment wraps the
-// chosen sink and writes that environment onto delta batches and static
-// baselines before the sink sees them. A zero envCfg leaves payloads
-// untouched.
+// chosen sink. It writes that environment onto delta batches, manifests
+// and static baselines before the sink sees them. A zero envCfg leaves
+// payloads untouched.
+//
+// When nsCfg.Value is non-empty, a processor.Namespace wraps the sink
+// outside the environment processor. It writes that service namespace
+// onto the same three payloads. A zero nsCfg leaves each agent's
+// namespace as sent.
 //
 // When redactCfg is enabled, a processor.Redaction wraps the sink outside
-// the environment processor. It hides string literals and drops unknown
+// the other processors. It hides string literals and drops unknown
 // fields before any payload is forwarded. A zero redactCfg leaves it out
 // of the chain.
-func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig, redactCfg processor.RedactionConfig) (*forward.ForwardingSink, error) {
+func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, redactCfg processor.RedactionConfig) (*forward.ForwardingSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -60,6 +65,10 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	if envCfg.Value != "" {
 		logger.Info("stamping environment on ingested payloads", "environment", envCfg.Value, "action", envCfg.Action)
 		sink = processor.NewEnvironment(sink, envCfg, logger)
+	}
+	if nsCfg.Value != "" {
+		logger.Info("stamping service namespace on ingested payloads", "namespace", nsCfg.Value, "action", nsCfg.Action)
+		sink = processor.NewNamespace(sink, nsCfg, logger)
 	}
 	if redactCfg.Enabled() {
 		logger.Info("redacting string literals in ingested payloads",

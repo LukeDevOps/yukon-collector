@@ -144,6 +144,7 @@ func (r *Redaction) record(res *yukonpb.ResourceAttributes, payload string, n in
 	}
 	metrics.RedactedLiterals.Add(int64(n), payload)
 	r.logger.Debug("redacted string literals",
+		"namespace", res.GetServiceNamespace(),
 		"service", res.GetServiceName(),
 		"instance", res.GetServiceInstanceId(),
 		"run", res.GetRunId(),

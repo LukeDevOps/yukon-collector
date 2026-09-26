@@ -28,8 +28,9 @@ yukon agent  --POST protobuf-->  yukon-collector  -->  Sink
 
 The agent's `HttpOtlpStyleExporter` posts three payload types, matching
 the paths this collector serves. Each one carries the same resource
-attributes: service name, version, instance ID, environment, and a run
-ID. The agent makes a fresh random run ID for each process, so an
+attributes: service namespace (optional), service name, version,
+instance ID, environment, and a run ID. A service is known by its
+namespace and name together. The agent makes a fresh random run ID for each process, so an
 instance restarted under a pinned instance ID still names a different run.
 
 - `POST /v1/yukon/deltas` — a `DeltaBatch`: resource attributes plus
@@ -83,16 +84,17 @@ repo and is published to the Buf Schema Registry as
 - `internal/forward` — `ForwardingSink` relays each decoded payload to a
   backend over the same protobuf-over-HTTP shape the collector accepts,
   the way an OTel Collector exporter re-sends OTLP downstream. Payloads
-  are queued and sent by background workers, sharded by service name
-  and instance ID so one instance's failing backend calls can't hold up
-  another's. The run ID is left out of the shard key, so a restarted
+  are queued and sent by background workers, sharded by service
+  namespace, service name and instance ID so one instance's failing
+  backend calls can't hold up another's. The run ID is left out of the shard key, so a restarted
   instance keeps its shard and its payloads stay in order. Retries use
   time-bounded exponential backoff on `429`/`502`/`503`/`504`. A full
   shard queue refuses the payload with `503` instead of queuing it, so
   the agent sends it again.
 - `internal/processor` — sinks that wrap another sink, changing or
   inspecting a decoded payload before passing it on: the role an OTel
-  Collector processor plays. Two exist, `Environment` and `Redaction`.
+  Collector processor plays. Three exist, `Environment`, `Namespace` and
+  `Redaction`.
 - `internal/auth` — a shared-secret bearer-token check, wrapped around the
   ingest routes as HTTP middleware. Kept separate from `ingest.Handler` so
   the decode layer stays auth-agnostic.
@@ -218,6 +220,7 @@ probes.
 | `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
 | `yukon_collector_forward_refused_total` | `payload`, `reason` | Not taken and answered `503` so the sender sends it again: `queue_full`, `shutting_down` |
 | `yukon_collector_environment_mismatch_total` | `payload` | The agent's environment differed from the collector's configured one (see [Environment](#environment)); `payload` is `deltas`, `manifest`, or `static_baseline` |
+| `yukon_collector_namespace_mismatch_total` | `payload` | The agent's service namespace differed from the collector's configured one (see [Namespace](#namespace)); `payload` is `deltas`, `manifest`, or `static_baseline` |
 | `yukon_collector_redacted_literals_total` | `payload` | String literal parts replaced by the redaction processor (see [Redaction](#redaction)); `payload` is `manifest` or `static_baseline` |
 
 `payload` is `deltas`, `manifest`, or `static_baseline`. The dropped
@@ -268,7 +271,7 @@ changing. Each can be overridden; durations use Go syntax (`30s`, `5m`).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `YUKON_COLLECTOR_FORWARD_SHARDS` | `8` | Independent queue/worker pairs; payloads are sharded by service identity |
+| `YUKON_COLLECTOR_FORWARD_SHARDS` | `8` | Independent queue/worker pairs; payloads are sharded by service namespace, service name and instance ID |
 | `YUKON_COLLECTOR_FORWARD_QUEUE_SIZE` | `64` | Queued payloads per shard before new ones are refused with `503` |
 | `YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT` | `10s` | Bound on one delivery attempt |
 | `YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL` | `5s` | First retry wait, grown 1.5x each attempt with jitter |
@@ -317,6 +320,45 @@ than the collector it reports to.
 
 Setting `YUKON_COLLECTOR_ENVIRONMENT_ACTION` without also setting
 `YUKON_COLLECTOR_ENVIRONMENT` is a misconfiguration and stops the
+collector at startup.
+
+### Namespace
+
+A service is known by its namespace and its name, so two teams can each
+run a service called `billing` and stay apart. The agent sets
+`service_namespace` on a payload only when it finds one, in its own
+`serviceNamespace` option or in OpenTelemetry's settings. One
+collector often serves one team, and setting that team's namespace once
+on the collector is easier than setting it on every agent. See
+[ADR 0002](docs/adr/0002-a-namespace-processor-stamps-a-service-namespace.md).
+
+Set `YUKON_COLLECTOR_SERVICE_NAMESPACE` to the namespace to stamp onto
+every delta batch, manifest and static baseline the collector ingests:
+
+```
+YUKON_COLLECTOR_SERVICE_NAMESPACE=payments go run ./cmd/yukon-collector
+```
+
+With no value set, the processor is off. One collector can then serve
+every namespace, and each agent's namespace passes through unchanged.
+
+`YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION` controls what happens when a
+payload already names a namespace:
+
+| Action | Behaviour |
+| --- | --- |
+| `insert` (default) | Fills in the namespace only for an agent that sent none; an agent's explicit value wins |
+| `upsert` | Always writes the collector's value, even over one the agent set |
+
+The collector compares the two values after it trims surrounding spaces.
+Case counts: `Payments` and `payments` are different namespaces. An agent
+value made only of spaces counts as none. When the agent's value differs
+from the collector's, `yukon_collector_namespace_mismatch_total` goes up
+under either action, and a `debug` log line names the service, instance
+and run involved.
+
+Setting `YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION` without also setting
+`YUKON_COLLECTOR_SERVICE_NAMESPACE` is a misconfiguration and stops the
 collector at startup.
 
 ### Redaction

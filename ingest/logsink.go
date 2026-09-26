@@ -27,6 +27,7 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 // count. It never fails.
 func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
+		"namespace", batch.GetResource().GetServiceNamespace(),
 		"service", batch.GetResource().GetServiceName(),
 		"instance", batch.GetResource().GetServiceInstanceId(),
 		"run", batch.GetResource().GetRunId(),
@@ -45,6 +46,7 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch)
 // dependency listing is delivered. It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
+		"namespace", manifest.GetResource().GetServiceNamespace(),
 		"service", manifest.GetResource().GetServiceName(),
 		"instance", manifest.GetResource().GetServiceInstanceId(),
 		"run", manifest.GetResource().GetRunId(),
@@ -70,6 +72,7 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManif
 // fails.
 func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
 	s.logger.Info("received static baseline",
+		"namespace", baseline.GetResource().GetServiceNamespace(),
 		"service", baseline.GetResource().GetServiceName(),
 		"instance", baseline.GetResource().GetServiceInstanceId(),
 		"run", baseline.GetResource().GetRunId(),

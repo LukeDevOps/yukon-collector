@@ -266,6 +266,82 @@ func TestResolveEnvironment(t *testing.T) {
 	}
 }
 
+func TestResolveNamespace(t *testing.T) {
+	tests := map[string]struct {
+		value   string
+		action  string
+		want    processor.NamespaceConfig
+		wantErr bool
+	}{
+		"unset": {
+			value:  "",
+			action: "",
+			want:   processor.NamespaceConfig{},
+		},
+		"value only": {
+			value:  "team-a",
+			action: "",
+			want:   processor.NamespaceConfig{Value: "team-a", Action: processor.Insert},
+		},
+		"value with surrounding spaces": {
+			value:  "  team-a  ",
+			action: "",
+			want:   processor.NamespaceConfig{Value: "team-a", Action: processor.Insert},
+		},
+		"value keeps its case": {
+			value:  "Team-A",
+			action: "",
+			want:   processor.NamespaceConfig{Value: "Team-A", Action: processor.Insert},
+		},
+		"value and insert": {
+			value:  "team-a",
+			action: "insert",
+			want:   processor.NamespaceConfig{Value: "team-a", Action: processor.Insert},
+		},
+		"value and upsert": {
+			value:  "team-a",
+			action: "UPSERT",
+			want:   processor.NamespaceConfig{Value: "team-a", Action: processor.Upsert},
+		},
+		"bad action": {
+			value:   "team-a",
+			action:  "overwrite",
+			wantErr: true,
+		},
+		"action without value": {
+			value:   "",
+			action:  "insert",
+			wantErr: true,
+		},
+		"whitespace-only value with action": {
+			value:   "   ",
+			action:  "upsert",
+			wantErr: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := resolveNamespace(tt.value, tt.action)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				if !strings.Contains(err.Error(), "YUKON_COLLECTOR_SERVICE_NAMESPACE") {
+					t.Fatalf("error %q does not name the variable", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("config = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveForwardConfig_BadValues_Error(t *testing.T) {
 	for name, value := range map[string]string{
 		"YUKON_COLLECTOR_FORWARD_SHARDS":                 "0",

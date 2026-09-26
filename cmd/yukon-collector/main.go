@@ -88,6 +88,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	nsCfg, err := resolveNamespace(os.Getenv("YUKON_COLLECTOR_SERVICE_NAMESPACE"), os.Getenv("YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION"))
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	redactCfg, err := resolveRedaction(os.Getenv("YUKON_COLLECTOR_REDACT_BLOCKED_VALUES"), os.Getenv("YUKON_COLLECTOR_REDACT_ALL_LITERALS"))
 	if err != nil {
 		logger.Error(err.Error())
@@ -95,7 +101,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg, envCfg, redactCfg)
+	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg, envCfg, nsCfg, redactCfg)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -299,6 +305,33 @@ func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig
 	}
 
 	return processor.EnvironmentConfig{Value: value, Action: action}, nil
+}
+
+// resolveNamespace builds the processor.NamespaceConfig from
+// YUKON_COLLECTOR_SERVICE_NAMESPACE and
+// YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION. A value that is blank after
+// trimming space turns the processor off, so each agent's namespace
+// passes through unchanged. An action with no value is an error: the
+// operator meant to set a namespace, and starting without it would hide
+// that mistake.
+func resolveNamespace(valueRaw, actionRaw string) (processor.NamespaceConfig, error) {
+	value := strings.TrimSpace(valueRaw)
+
+	action, err := processor.ParseAction(actionRaw)
+	if err != nil {
+		return processor.NamespaceConfig{}, fmt.Errorf("YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION: %w", err)
+	}
+
+	if value == "" {
+		if actionRaw != "" {
+			return processor.NamespaceConfig{}, errors.New(
+				"YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION is set but YUKON_COLLECTOR_SERVICE_NAMESPACE is empty; " +
+					"set YUKON_COLLECTOR_SERVICE_NAMESPACE or unset YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION")
+		}
+		return processor.NamespaceConfig{}, nil
+	}
+
+	return processor.NamespaceConfig{Value: value, Action: action}, nil
 }
 
 // resolveRedaction builds the processor.RedactionConfig from

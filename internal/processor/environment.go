@@ -15,16 +15,16 @@ import (
 	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
-// Action says what Environment does when a payload already names an
-// environment.
+// Action says what Environment or Namespace does when a payload already
+// holds a value for its field.
 type Action int
 
 const (
-	// Insert keeps an agent-set environment and only fills in an absent
-	// one. It is the zero value and the default.
+	// Insert keeps an agent-set value and only fills in an absent one. It
+	// is the zero value and the default.
 	Insert Action = iota
-	// Upsert always writes the collector's configured environment, even
-	// over one the agent already set.
+	// Upsert always writes the collector's configured value, even over one
+	// the agent already set.
 	Upsert
 )
 
@@ -127,6 +127,7 @@ func (e *Environment) stamp(res *yukonpb.ResourceAttributes, payload string) {
 
 	metrics.EnvironmentMismatch.Inc(payload)
 	e.logger.Debug("agent environment does not match the collector's configured environment",
+		"namespace", res.GetServiceNamespace(),
 		"service", res.GetServiceName(),
 		"instance", res.GetServiceInstanceId(),
 		"run", res.GetRunId(),

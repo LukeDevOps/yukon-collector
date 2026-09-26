@@ -63,7 +63,7 @@ func staticBaselineRequest(t *testing.T, serverURL string) *http.Request {
 }
 
 // mustRegisterRoutes wires routes for a config the test expects to be
-// valid, with the environment processor left off.
+// valid, with every processor left off.
 func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
 	t.Helper()
 	return mustRegisterRoutesWithEnv(t, mux, authToken, limiter, forwardURL, forwardAuthToken, processor.EnvironmentConfig{})
@@ -73,14 +73,14 @@ func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limi
 // envCfg, for tests that care how the environment processor behaves.
 func mustRegisterRoutesWithEnv(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string, envCfg processor.EnvironmentConfig) *forward.ForwardingSink {
 	t.Helper()
-	return mustRegisterRoutesWithProcessors(t, mux, forwardURL, envCfg, processor.RedactionConfig{}, authToken, limiter, forwardAuthToken)
+	return mustRegisterRoutesWithProcessors(t, mux, forwardURL, envCfg, processor.NamespaceConfig{}, processor.RedactionConfig{}, authToken, limiter, forwardAuthToken)
 }
 
 // mustRegisterRoutesWithProcessors is mustRegisterRoutes with explicit
 // processor configs.
-func mustRegisterRoutesWithProcessors(t *testing.T, mux *http.ServeMux, forwardURL string, envCfg processor.EnvironmentConfig, redactCfg processor.RedactionConfig, authToken string, limiter *ratelimit.Limiter, forwardAuthToken string) *forward.ForwardingSink {
+func mustRegisterRoutesWithProcessors(t *testing.T, mux *http.ServeMux, forwardURL string, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, redactCfg processor.RedactionConfig, authToken string, limiter *ratelimit.Limiter, forwardAuthToken string) *forward.ForwardingSink {
 	t.Helper()
-	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken}, envCfg, redactCfg)
+	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken}, envCfg, nsCfg, redactCfg)
 	if err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 
 func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}, processor.RedactionConfig{}); err == nil {
+	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err == nil {
 		t.Fatal("expected an error for an unusable forward URL, got nil")
 	}
 }
@@ -292,7 +292,10 @@ func TestRegisterRoutes_Metrics_CountsAcceptedIngest(t *testing.T) {
 	}
 }
 
-func TestRegisterRoutes_EnvironmentConfigSet_StampsForwardedDeltaBatch(t *testing.T) {
+// forwardDelta posts a delta batch carrying res to a collector wired
+// with envCfg and nsCfg, and returns the batch its backend received.
+func forwardDelta(t *testing.T, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, res *yukonpb.ResourceAttributes) *yukonpb.DeltaBatch {
+	t.Helper()
 	received := make(chan *yukonpb.DeltaBatch, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -313,13 +316,20 @@ func TestRegisterRoutes_EnvironmentConfigSet_StampsForwardedDeltaBatch(t *testin
 	defer backend.Close()
 
 	mux := http.NewServeMux()
-	fwd := mustRegisterRoutesWithEnv(t, mux, "", nil, backend.URL, "", processor.EnvironmentConfig{Value: "uat"})
+	fwd := mustRegisterRoutesWithProcessors(t, mux, backend.URL, envCfg, nsCfg, processor.RedactionConfig{}, "", nil, "")
 	defer fwd.Shutdown(context.Background())
 
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	resp := postDelta(t, server.URL)
+	body, err := proto.Marshal(&yukonpb.DeltaBatch{Resource: res})
+	if err != nil {
+		t.Fatalf("marshal batch: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
@@ -327,11 +337,64 @@ func TestRegisterRoutes_EnvironmentConfigSet_StampsForwardedDeltaBatch(t *testin
 
 	select {
 	case batch := <-received:
-		if got := batch.GetResource().GetEnvironment(); got != "uat" {
-			t.Fatalf("forwarded batch environment = %q, want %q", got, "uat")
-		}
+		return batch
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the backend to receive the forwarded batch")
+		return nil
+	}
+}
+
+// demoResource is the smallest resource the handler accepts. It names a
+// namespace only when ns is non-empty.
+func demoResource(ns string) *yukonpb.ResourceAttributes {
+	res := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
+	if ns != "" {
+		res.SetServiceNamespace(ns)
+	}
+	return res
+}
+
+func TestRegisterRoutes_EnvironmentConfigSet_StampsForwardedDeltaBatch(t *testing.T) {
+	batch := forwardDelta(t, processor.EnvironmentConfig{Value: "uat"}, processor.NamespaceConfig{}, demoResource(""))
+	if got := batch.GetResource().GetEnvironment(); got != "uat" {
+		t.Fatalf("forwarded batch environment = %q, want %q", got, "uat")
+	}
+}
+
+func TestRegisterRoutes_NamespaceConfigSet_StampsForwardedDeltaBatch(t *testing.T) {
+	batch := forwardDelta(t, processor.EnvironmentConfig{}, processor.NamespaceConfig{Value: "team-a"}, demoResource(""))
+	if got := batch.GetResource().GetServiceNamespace(); got != "team-a" {
+		t.Fatalf("forwarded batch namespace = %q, want %q", got, "team-a")
+	}
+}
+
+func TestRegisterRoutes_NamespaceUpsert_ReplacesAgentNamespace(t *testing.T) {
+	nsCfg := processor.NamespaceConfig{Value: "team-a", Action: processor.Upsert}
+	batch := forwardDelta(t, processor.EnvironmentConfig{}, nsCfg, demoResource("team-b"))
+	if got := batch.GetResource().GetServiceNamespace(); got != "team-a" {
+		t.Fatalf("forwarded batch namespace = %q, want %q", got, "team-a")
+	}
+}
+
+func TestRegisterRoutes_NamespaceConfigBlank_PassesAgentNamespaceThrough(t *testing.T) {
+	for _, agent := range []string{"", "team-b"} {
+		batch := forwardDelta(t, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, demoResource(agent))
+		if got := batch.GetResource().GetServiceNamespace(); got != agent {
+			t.Errorf("agent namespace %q: forwarded namespace = %q, want it unchanged", agent, got)
+		}
+		if agent == "" && batch.GetResource().HasServiceNamespace() {
+			t.Errorf("agent sent no namespace, but the forwarded batch has one set")
+		}
+	}
+}
+
+func TestRegisterRoutes_BothProcessorsSet_StampBothFields(t *testing.T) {
+	batch := forwardDelta(t, processor.EnvironmentConfig{Value: "uat"}, processor.NamespaceConfig{Value: "team-a"}, demoResource(""))
+	if got := batch.GetResource().GetEnvironment(); got != "uat" {
+		t.Fatalf("forwarded batch environment = %q, want %q", got, "uat")
+	}
+	if got := batch.GetResource().GetServiceNamespace(); got != "team-a" {
+		t.Fatalf("forwarded batch namespace = %q, want %q", got, "team-a")
 	}
 }
 
@@ -379,7 +442,7 @@ func forwardManifest(t *testing.T, redactCfg processor.RedactionConfig) *yukonpb
 	defer backend.Close()
 
 	mux := http.NewServeMux()
-	fwd := mustRegisterRoutesWithProcessors(t, mux, backend.URL, processor.EnvironmentConfig{}, redactCfg, "", nil, "")
+	fwd := mustRegisterRoutesWithProcessors(t, mux, backend.URL, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, redactCfg, "", nil, "")
 	defer fwd.Shutdown(context.Background())
 
 	server := httptest.NewServer(mux)

@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,9 +64,10 @@ type Config struct {
 	AuthToken string
 
 	// Shards is the number of independent worker/queue pairs. A payload is
-	// routed to a shard by hashing its service identity, so one
-	// instance's stuck backend retries can't hold up delivery for every
-	// other instance's healthy traffic. Defaults to defaultShards.
+	// routed to a shard by hashing its namespace, service name and
+	// instance ID, so one instance's stuck backend retries can't hold up
+	// delivery for every other instance's healthy traffic. Defaults to
+	// defaultShards.
 	Shards int
 
 	// QueueSize bounds each shard's queue. A full shard refuses the
@@ -139,18 +141,18 @@ func newHTTPClient(shards int) *http.Client {
 }
 
 // queuedItem is a payload already marshaled to wire bytes, ready to POST.
-// Marshaling happens once, in Accept, not on every retry attempt. key is
-// the service identity the item was sharded on; it names the owner in
-// log lines when the item is dropped, so an operator can tell whose data
-// went missing.
+// Marshaling happens once, in Accept, not on every retry attempt. owner
+// is the instance the item was sharded on. It names the owner in log
+// lines when the item is dropped, so an operator can tell whose data went
+// missing.
 type queuedItem struct {
-	key  string
-	path string
-	body []byte
+	owner instance
+	path  string
+	body  []byte
 }
 
 // shard is one independent queue and worker goroutine. ForwardingSink
-// routes a payload to a shard by hashing its service identity, so a
+// routes a payload to a shard by hashing its instance's shard key, so a
 // stuck backend for one instance only ever occupies that instance's
 // shard, never every other instance's.
 type shard struct {
@@ -248,14 +250,54 @@ func validateURL(raw string) (string, error) {
 	return strings.TrimRight(raw, "/"), nil
 }
 
-// instanceKey builds the shard key every payload type is routed on:
-// service name and instance ID together. The run ID is left out on purpose. A
-// restarted instance gets a different run ID, and a key with the run ID in it
-// would move the instance to another shard. The single worker per shard
-// keeps one instance's payloads in order, and that order would be lost
-// across the restart.
-func instanceKey(service, instance string) string {
-	return service + "/" + instance
+// instance names the service instance a payload came from: the service's
+// identity, which is its namespace and name, plus the instance ID. An
+// empty namespace is the unspecified one.
+type instance struct {
+	namespace string
+	service   string
+	id        string
+}
+
+// instanceOf reads the instance from res. It trims the namespace and
+// service name, as the backend does when it keys a service, so one
+// service never splits across shards. A nil res gives the zero instance.
+func instanceOf(res *yukonpb.ResourceAttributes) instance {
+	return instance{
+		namespace: strings.TrimSpace(res.GetServiceNamespace()),
+		service:   strings.TrimSpace(res.GetServiceName()),
+		id:        res.GetServiceInstanceId(),
+	}
+}
+
+// shardKey builds the key every payload type is routed on. It writes
+// each part as its byte length, a colon, then the part itself. Any part
+// may hold "/" or ":", or be empty, so a plain separator could give two
+// distinct instances one key. With the length prefix, each key decodes
+// one way only.
+//
+// The run ID is left out on purpose. A restarted instance gets a
+// different run ID, and a key with the run ID in it would move the
+// instance to another shard. The single worker per shard keeps one
+// instance's payloads in order, and that order would be lost across the
+// restart.
+func (i instance) shardKey() string {
+	var b strings.Builder
+	for _, part := range [...]string{i.namespace, i.service, i.id} {
+		b.WriteString(strconv.Itoa(len(part)))
+		b.WriteByte(':')
+		b.WriteString(part)
+	}
+	return b.String()
+}
+
+// String names the instance for people to read in errors and logs. It
+// quotes each part, so a reader can tell where one part ends.
+func (i instance) String() string {
+	if i.namespace == "" {
+		return fmt.Sprintf("service %q instance %q", i.service, i.id)
+	}
+	return fmt.Sprintf("namespace %q service %q instance %q", i.namespace, i.service, i.id)
 }
 
 // AcceptDeltaBatch marshals batch and queues it on the shard for its
@@ -272,7 +314,7 @@ func (s *ForwardingSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.Delt
 		metrics.ForwardDropped.Inc("deltas", "marshal")
 		return nil
 	}
-	return s.enqueue(queuedItem{key: instanceKey(batch.GetResource().GetServiceName(), batch.GetResource().GetServiceInstanceId()), path: ingest.DeltaBatchPath, body: body})
+	return s.enqueue(queuedItem{owner: instanceOf(batch.GetResource()), path: ingest.DeltaBatchPath, body: body})
 }
 
 // AcceptManifest marshals manifest and queues it on the shard for its
@@ -286,7 +328,7 @@ func (s *ForwardingSink) AcceptManifest(_ context.Context, manifest *yukonpb.Pro
 		metrics.ForwardDropped.Inc("manifest", "marshal")
 		return nil
 	}
-	return s.enqueue(queuedItem{key: instanceKey(manifest.GetResource().GetServiceName(), manifest.GetResource().GetServiceInstanceId()), path: ingest.ManifestPath, body: body})
+	return s.enqueue(queuedItem{owner: instanceOf(manifest.GetResource()), path: ingest.ManifestPath, body: body})
 }
 
 // AcceptStaticBaseline marshals baseline and queues it on the shard for
@@ -300,7 +342,7 @@ func (s *ForwardingSink) AcceptStaticBaseline(_ context.Context, baseline *yukon
 		metrics.ForwardDropped.Inc("static_baseline", "marshal")
 		return nil
 	}
-	return s.enqueue(queuedItem{key: instanceKey(baseline.GetResource().GetServiceName(), baseline.GetResource().GetServiceInstanceId()), path: ingest.StaticBaselinePath, body: body})
+	return s.enqueue(queuedItem{owner: instanceOf(baseline.GetResource()), path: ingest.StaticBaselinePath, body: body})
 }
 
 // enqueue puts item on its shard's queue. It returns an error wrapping
@@ -310,15 +352,15 @@ func (s *ForwardingSink) AcceptStaticBaseline(_ context.Context, baseline *yukon
 func (s *ForwardingSink) enqueue(item queuedItem) error {
 	if s.closed.Load() {
 		s.refused(item, "shutting_down")
-		return fmt.Errorf("%w (service %s)", ErrShuttingDown, item.key)
+		return fmt.Errorf("%w (%s)", ErrShuttingDown, item.owner)
 	}
-	sh := s.shards[shardIndex(item.key, len(s.shards))]
+	sh := s.shards[shardIndex(item.owner.shardKey(), len(s.shards))]
 	select {
 	case sh.queue <- item:
 		return nil
 	default:
 		s.refused(item, "queue_full")
-		return fmt.Errorf("%w (service %s)", ErrQueueFull, item.key)
+		return fmt.Errorf("%w (%s)", ErrQueueFull, item.owner)
 	}
 }
 
@@ -337,10 +379,15 @@ var dropReasons = map[string]string{
 	"shutdown_attempt_failed": "shutdown drain attempt failed",
 }
 
-// dropped records one discarded payload: a Warn log naming the service it
-// belonged to, and a count under reason.
+// dropped records one discarded payload: a Warn log naming the instance
+// it belonged to, and a count under reason.
 func (s *ForwardingSink) dropped(item queuedItem, reason string, err error) {
-	attrs := []any{"service", item.key, "path", item.path}
+	attrs := []any{
+		"namespace", item.owner.namespace,
+		"service", item.owner.service,
+		"instance", item.owner.id,
+		"path", item.path,
+	}
 	if err != nil {
 		attrs = append(attrs, "error", err)
 	}

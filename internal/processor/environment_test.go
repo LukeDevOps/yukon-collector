@@ -10,8 +10,8 @@ import (
 	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
-// recordingSink records every payload it receives, standing in for the
-// real sink an Environment processor wraps.
+// recordingSink records every payload it receives. It stands in for the
+// real sink a processor wraps.
 type recordingSink struct {
 	deltaBatches []*yukonpb.DeltaBatch
 	manifests    []*yukonpb.ProbeManifest
