@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -189,8 +188,18 @@ type ForwardingSink struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	closed       atomic.Bool
-	stopping     chan struct{}
+	// mu holds enqueue's shutdown check and its queue send together
+	// against Shutdown setting closed, so an item that passed the check
+	// is queued before drainOnce empties the queue, not after it, where
+	// it would be answered 202 and never forwarded. The send never
+	// blocks, so the read lock is brief.
+	mu       sync.RWMutex
+	closed   bool
+	stopping chan struct{}
+
+	// beforeSend, when set by a test, runs in enqueue between the
+	// shutdown check and the queue send.
+	beforeSend   func()
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
 }
@@ -350,9 +359,14 @@ func (s *ForwardingSink) AcceptStaticBaseline(_ context.Context, baseline *yukon
 // shard queue has no room. It does not log the error: the ingest handler
 // logs every sink error it answers with 503.
 func (s *ForwardingSink) enqueue(item queuedItem) error {
-	if s.closed.Load() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
 		s.refused(item, "shutting_down")
 		return fmt.Errorf("%w (%s)", ErrShuttingDown, item.owner)
+	}
+	if s.beforeSend != nil {
+		s.beforeSend()
 	}
 	sh := s.shards[shardIndex(item.owner.shardKey(), len(s.shards))]
 	select {
@@ -531,7 +545,9 @@ func (s *ForwardingSink) Shutdown(ctx context.Context) {
 	if !first {
 		return
 	}
-	s.closed.Store(true)
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	close(s.stopping)
 
 	waitDone := make(chan struct{})

@@ -835,3 +835,37 @@ func TestForwardingSink_Shutdown_DuringRetryWait_FinalAttemptAlsoFails(t *testin
 		t.Fatalf("shutdown_attempt_failed count = %d, want %d", got, droppedBefore+1)
 	}
 }
+
+// An Accept that has passed the shutdown check when Shutdown starts must
+// still reach the backend: the handler answers 202 for it, so the agent
+// will not send it again. beforeSend holds the Accept between the check
+// and the queue send long enough for an unguarded Shutdown to finish its
+// drain first.
+func TestForwardingSink_AcceptRacingShutdown_AcceptedPayloadIsDelivered(t *testing.T) {
+	var delivered atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		delivered.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	sink := mustNewSink(t, testConfig(backend.URL))
+	shutdownDone := make(chan struct{})
+	sink.beforeSend = func() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			sink.Shutdown(ctx)
+			close(shutdownDone)
+		}()
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest = %v, want nil: it passed the shutdown check before Shutdown began", err)
+	}
+	<-shutdownDone
+	if got := delivered.Load(); got != 1 {
+		t.Fatalf("backend received %d payloads, want the 1 accepted", got)
+	}
+}
