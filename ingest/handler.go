@@ -5,10 +5,12 @@ package ingest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
 	"net/http"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -158,7 +160,9 @@ func (h *Handler) handleStaticBaseline(w http.ResponseWriter, r *http.Request) {
 
 // validateResource checks the resource every payload carries: the
 // service name, instance ID and run ID a Sink needs to attribute the
-// payload. class_id and every cumulative total mean something only
+// payload. A service name that is blank after trimming is empty. A
+// service name or namespace that is "." or ".." after trimming is
+// rejected; see isDotSegment. class_id and every cumulative total mean something only
 // within one run of one instance. The agent makes a fresh run ID per
 // process, so an instance restarted under a pinned instance ID still
 // names a different run. An empty run_id means the sender did not set
@@ -167,8 +171,15 @@ func validateResource(res *yukonpb.ResourceAttributes) error {
 	if res == nil {
 		return errors.New("missing resource")
 	}
-	if res.GetServiceName() == "" {
+	name := strings.TrimSpace(res.GetServiceName())
+	if name == "" {
 		return errors.New("resource.service_name is empty")
+	}
+	if isDotSegment(name) {
+		return fmt.Errorf("resource.service_name is %q, which no URL path can name", name)
+	}
+	if namespace := strings.TrimSpace(res.GetServiceNamespace()); isDotSegment(namespace) {
+		return fmt.Errorf("resource.service_namespace is %q, which no URL path can name", namespace)
 	}
 	if res.GetServiceInstanceId() == "" {
 		return errors.New("resource.service_instance_id is empty")
@@ -177,6 +188,16 @@ func validateResource(res *yukonpb.ResourceAttributes) error {
 		return errors.New("resource.run_id is empty")
 	}
 	return nil
+}
+
+// isDotSegment reports whether v is "." or "..". A service is read at a
+// URL path that holds its namespace and name as segments, and browsers
+// remove a dot segment even when it is percent-escaped. So a service
+// named that way could never be opened, and a namespace ".." would lead
+// to another service. Backends key a service by the trimmed values, so
+// callers pass trimmed values.
+func isDotSegment(v string) bool {
+	return v == "." || v == ".."
 }
 
 // validateDeltaBatch checks the resource a Sink needs to attribute the

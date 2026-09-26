@@ -313,7 +313,8 @@ func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig
 // trimming space turns the processor off, so each agent's namespace
 // passes through unchanged. An action with no value is an error: the
 // operator meant to set a namespace, and starting without it would hide
-// that mistake.
+// that mistake. A value of "." or ".." is an error, since the ingest
+// handler rejects that namespace from an agent too.
 func resolveNamespace(valueRaw, actionRaw string) (processor.NamespaceConfig, error) {
 	value := strings.TrimSpace(valueRaw)
 
@@ -329,6 +330,9 @@ func resolveNamespace(valueRaw, actionRaw string) (processor.NamespaceConfig, er
 					"set YUKON_COLLECTOR_SERVICE_NAMESPACE or unset YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION")
 		}
 		return processor.NamespaceConfig{}, nil
+	}
+	if value == "." || value == ".." {
+		return processor.NamespaceConfig{}, fmt.Errorf("YUKON_COLLECTOR_SERVICE_NAMESPACE is %q, which no URL path can name", value)
 	}
 
 	return processor.NamespaceConfig{Value: value, Action: action}, nil

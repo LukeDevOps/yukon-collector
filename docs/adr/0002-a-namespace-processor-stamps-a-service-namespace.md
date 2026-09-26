@@ -14,6 +14,7 @@ A service is known by its namespace and its name. Often one collector serves one
 - `insert` fills in a payload that names no namespace. `upsert` also replaces one that names a different namespace. A difference is counted in `yukon_collector_namespace_mismatch_total{payload}`, whichever action is set.
 - It stamps delta batches, probe manifests and static baselines, as the `Environment` processor does.
 - The forwarding shard key becomes namespace, service and instance, since namespace is part of the service's identity.
+- `ingest.Handler` rejects a payload with a `400` when its service name is blank, or its service name or namespace is `.` or `..` after trimming. The backend reads a service at a URL path that holds both, and browsers drop dot segments even when they are escaped, so such a service could never be opened, and a namespace `..` would lead to another service. `YUKON_COLLECTOR_SERVICE_NAMESPACE` refuses the same two values at startup.
 
 ## Considered options
 

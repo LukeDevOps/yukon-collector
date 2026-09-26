@@ -71,7 +71,10 @@ repo and is published to the Buf Schema Registry as
   needs to attribute them, with `400` before they reach the sink; accepts
   valid ones with `202`. All three payloads are checked the same way,
   since `class_id` and every cumulative total are only meaningful within
-  one run of one instance.
+  one run of one instance. A service name that is blank, and a service
+  name or namespace that is `.` or `..`, are rejected the same way: a
+  service is read at a URL path that holds both, and browsers drop dot
+  segments even when they are escaped.
 - `ingest.Sink` — the seam a real backend implements. The
   collector has no storage of its own, so this interface is the entire
   contract between "decoded a payload" and "did something with it."

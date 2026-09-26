@@ -308,6 +308,16 @@ func TestResolveNamespace(t *testing.T) {
 			action:  "overwrite",
 			wantErr: true,
 		},
+		"dot value": {
+			value:   ".",
+			action:  "",
+			wantErr: true,
+		},
+		"dots value with spaces": {
+			value:   " .. ",
+			action:  "upsert",
+			wantErr: true,
+		},
 		"action without value": {
 			value:   "",
 			action:  "insert",

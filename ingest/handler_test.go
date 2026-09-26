@@ -518,6 +518,66 @@ func TestHandler_EmptyRunId_RejectedForEveryPayload(t *testing.T) {
 	}
 }
 
+func TestHandler_UnnameableServiceIdentity_RejectedForEveryPayload(t *testing.T) {
+	withNamespace := func(namespace string) *yukonpb.ResourceAttributes {
+		res := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
+		res.SetServiceNamespace(namespace)
+		return res
+	}
+	for name, tc := range map[string]struct {
+		res  *yukonpb.ResourceAttributes
+		want string
+	}{
+		"blank service name": {&yukonpb.ResourceAttributes{ServiceName: "   ", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name is empty"},
+		"dot service name":   {&yukonpb.ResourceAttributes{ServiceName: ".", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name"},
+		"dots service name":  {&yukonpb.ResourceAttributes{ServiceName: " .. ", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name"},
+		"dot namespace":      {withNamespace("."), "resource.service_namespace"},
+		"dots namespace":     {withNamespace(" .. "), "resource.service_namespace"},
+	} {
+		for path, msg := range map[string]proto.Message{
+			DeltaBatchPath:     &yukonpb.DeltaBatch{Resource: tc.res},
+			ManifestPath:       &yukonpb.ProbeManifest{Resource: tc.res},
+			StaticBaselinePath: &yukonpb.StaticBaseline{Resource: tc.res, ScannedAt: 1700000000, ChunkCount: 1},
+		} {
+			t.Run(name+" "+path, func(t *testing.T) {
+				sink := &fakeSink{}
+				server := newTestServer(sink)
+				defer server.Close()
+
+				resp := postProto(t, server.URL+path, msg)
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+				}
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				if !strings.Contains(string(body), tc.want) {
+					t.Errorf("body = %q, want it to name %s", body, tc.want)
+				}
+				if n := len(sink.deltaBatches) + len(sink.manifests) + len(sink.baselines); n != 0 {
+					t.Fatalf("sink received %d payloads, want 0", n)
+				}
+			})
+		}
+	}
+}
+
+func TestHandler_DotsInsideAName_Accepted(t *testing.T) {
+	res := &yukonpb.ResourceAttributes{ServiceName: "checkout.v2", ServiceInstanceId: "instance-1", RunId: "run-1"}
+	res.SetServiceNamespace("...")
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	resp := postProto(t, server.URL+DeltaBatchPath, &yukonpb.DeltaBatch{Resource: res})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+}
+
 func TestHandler_WrongMethod_Rejected(t *testing.T) {
 	sink := &fakeSink{}
 	server := newTestServer(sink)
