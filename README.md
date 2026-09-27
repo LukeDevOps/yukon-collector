@@ -174,6 +174,22 @@ docker build -t yukon-collector .
 docker run --rm -p 4319:4319 -e YUKON_COLLECTOR_AUTH_TOKEN=s3cret yukon-collector
 ```
 
+### TLS
+
+The collector serves plain HTTP only, so it must sit behind a
+TLS-terminating reverse proxy or load balancer whenever agents reach it
+across a network you do not control. Without one, the agent's bearer
+token and every payload travel in the clear, including string literals,
+which the redaction processor only sees once they reach the collector.
+Point the agent's `endpoint` at the proxy's `https` URL, and make sure
+agents and anything else outside your control can reach the listener
+only through the proxy; that is also the condition for setting
+`YUKON_COLLECTOR_CLIENT_IP_HEADER` (see below). Probes and scrapers of
+`/healthz` and `/metrics` inside your network can still reach it
+directly. Likewise, use an `https` `YUKON_COLLECTOR_FORWARD_URL`
+whenever the backend is reached across a network you do not control,
+since that hop carries `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN`.
+
 ### Rate limiting
 
 `/v1/yukon/deltas`, `/v1/yukon/manifest`, and `/v1/yukon/static-baseline`
