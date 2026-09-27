@@ -12,3 +12,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # The build image tracks the go directive in go.mod, the floor for anyone
+    # importing ingest or metrics, so only a go.mod change moves it a minor.
+    ignore:
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
