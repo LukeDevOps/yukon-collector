@@ -2,6 +2,9 @@ package main
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,54 +15,179 @@ import (
 	"github.com/LukeDevOps/yukon-collector/internal/processor"
 )
 
-func TestResolveAuthToken_TokenSet_ReturnsToken(t *testing.T) {
-	token, err := resolveAuthToken("s3cret", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// writeTokenFile writes content to a new file and returns its path.
+func writeTokenFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tokens")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
 	}
-	if token != "s3cret" {
-		t.Fatalf("token = %q, want %q", token, "s3cret")
+	return path
+}
+
+// replaceTokenFile swaps path's content through a rename, so a re-read
+// never sees a half-written file.
+func replaceTokenFile(t *testing.T, path, content string) {
+	t.Helper()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatalf("rename token file: %v", err)
 	}
 }
 
-func TestResolveAuthToken_NoTokenNoOptOut_Errors(t *testing.T) {
-	_, err := resolveAuthToken("", "")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+func TestParseTokenList(t *testing.T) {
+	tests := map[string]struct {
+		raw     string
+		want    []string
+		wantErr bool
+	}{
+		"single token":         {raw: "s3cret", want: []string{"s3cret"}},
+		"several tokens":       {raw: "a,b,c", want: []string{"a", "b", "c"}},
+		"spaces trimmed":       {raw: " a , b\t,c ", want: []string{"a", "b", "c"}},
+		"inner spaces kept":    {raw: "a b,c", want: []string{"a b", "c"}},
+		"empty middle entry":   {raw: "a,,b", wantErr: true},
+		"leading comma":        {raw: ",a", wantErr: true},
+		"trailing comma":       {raw: "a,", wantErr: true},
+		"entry of only spaces": {raw: "a,   ,b", wantErr: true},
+		"only spaces":          {raw: "   ", wantErr: true},
+		"only a comma":         {raw: ",", wantErr: true},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseTokenList(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("parseTokenList(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
 	}
 }
 
-func TestResolveAuthToken_NoTokenExplicitOptOut_ReturnsEmpty(t *testing.T) {
-	token, err := resolveAuthToken("", "1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if token != "" {
-		t.Fatalf("token = %q, want empty", token)
-	}
-}
+func TestResolveAuthTokens(t *testing.T) {
+	goodFile := writeTokenFile(t, "# agents\nfile-a\n\n  file-b  \n")
+	emptyFile := writeTokenFile(t, "")
+	commentFile := writeTokenFile(t, "# no tokens yet\n\n")
+	missingFile := filepath.Join(t.TempDir(), "missing")
 
-func TestResolveAuthToken_NoTokenOptOutFalse_Errors(t *testing.T) {
-	_, err := resolveAuthToken("", "false")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	tests := map[string]struct {
+		env      map[string]string
+		accepted []string
+		refused  []string
+		noAuth   bool
+		wantFile bool
+		wantErr  bool
+	}{
+		"single token": {
+			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "s3cret"},
+			accepted: []string{"s3cret"},
+			refused:  []string{"other"},
+		},
+		"token list": {
+			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "old, new"},
+			accepted: []string{"old", "new"},
+			refused:  []string{"old, new", " new", "other"},
+		},
+		"token and opt-out, token wins": {
+			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "s3cret", "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			accepted: []string{"s3cret"},
+			refused:  []string{""},
+		},
+		"empty list entry": {
+			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "a,,b"},
+			wantErr: true,
+		},
+		"empty list entry with opt-out": {
+			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "a,", "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			wantErr: true,
+		},
+		"token file": {
+			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": goodFile},
+			accepted: []string{"file-a", "file-b"},
+			refused:  []string{"# agents", "", "other"},
+			wantFile: true,
+		},
+		"both variables set": {
+			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "s3cret", "YUKON_COLLECTOR_AUTH_TOKEN_FILE": goodFile},
+			wantErr: true,
+		},
+		"missing token file": {
+			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": missingFile},
+			wantErr: true,
+		},
+		"missing token file with opt-out": {
+			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": missingFile, "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			wantErr: true,
+		},
+		"empty token file with opt-out": {
+			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": emptyFile, "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			wantErr: true,
+		},
+		"comment-only token file with opt-out": {
+			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": commentFile, "YUKON_COLLECTOR_INSECURE_NO_AUTH": "true"},
+			wantErr: true,
+		},
+		"nothing set": {
+			env:     nil,
+			wantErr: true,
+		},
+		"nothing set, explicit opt-out": {
+			env:    map[string]string{"YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			noAuth: true,
+		},
+		"nothing set, opt-out false": {
+			env:     map[string]string{"YUKON_COLLECTOR_INSECURE_NO_AUTH": "false"},
+			wantErr: true,
+		},
+		"nothing set, unparsable opt-out": {
+			env:     map[string]string{"YUKON_COLLECTOR_INSECURE_NO_AUTH": "not-a-bool"},
+			wantErr: true,
+		},
 	}
-}
 
-func TestResolveAuthToken_NoTokenGarbageOptOut_Errors(t *testing.T) {
-	_, err := resolveAuthToken("", "not-a-bool")
-	if err == nil {
-		t.Fatal("expected error for unparseable opt-out value, got nil")
-	}
-}
-
-func TestResolveAuthToken_TokenSetAndOptOutSet_TokenWins(t *testing.T) {
-	token, err := resolveAuthToken("s3cret", "1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if token != "s3cret" {
-		t.Fatalf("token = %q, want %q", token, "s3cret")
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			tokens, file, err := resolveAuthTokens(envFrom(tt.env))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.noAuth {
+				if tokens != nil || file != nil {
+					t.Fatalf("tokens = %v, file = %v, want both nil for no auth", tokens, file)
+				}
+				return
+			}
+			if (file != nil) != tt.wantFile {
+				t.Fatalf("file returned = %v, want %v", file != nil, tt.wantFile)
+			}
+			for _, token := range tt.accepted {
+				if !tokens.Matches(token) {
+					t.Errorf("token %q refused, want accepted", token)
+				}
+			}
+			for _, token := range tt.refused {
+				if tokens.Matches(token) {
+					t.Errorf("token %q accepted, want refused", token)
+				}
+			}
+		})
 	}
 }
 
@@ -165,17 +293,20 @@ func envFrom(vars map[string]string) func(string) string {
 }
 
 func TestResolveForwardConfig_Unset_LeavesZeroValues(t *testing.T) {
-	cfg, err := resolveForwardConfig(envFrom(nil))
+	cfg, file, err := resolveForwardConfig(envFrom(nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg != (forward.Config{}) {
 		t.Fatalf("config = %+v, want all zero so the forward package applies its defaults", cfg)
 	}
+	if file != nil {
+		t.Fatal("token file returned with no file configured")
+	}
 }
 
 func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
-	cfg, err := resolveForwardConfig(envFrom(map[string]string{
+	cfg, _, err := resolveForwardConfig(envFrom(map[string]string{
 		"YUKON_COLLECTOR_FORWARD_URL":                    "https://backend.example.com",
 		"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN":             "backend-secret",
 		"YUKON_COLLECTOR_FORWARD_SHARDS":                 "4",
@@ -190,7 +321,7 @@ func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
 	}
 	want := forward.Config{
 		URL:                  "https://backend.example.com",
-		AuthToken:            "backend-secret",
+		AuthToken:            forward.StaticToken("backend-secret"),
 		Shards:               4,
 		QueueSize:            128,
 		RequestTimeout:       15 * time.Second,
@@ -200,6 +331,92 @@ func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
 	}
 	if cfg != want {
 		t.Fatalf("config = %+v, want %+v", cfg, want)
+	}
+}
+
+func TestResolveForwardConfig_AuthToken(t *testing.T) {
+	oneKey := writeTokenFile(t, "# backend key\n  file-key  \n\n")
+	noKey := writeTokenFile(t, "# rotating\n")
+	twoKeys := writeTokenFile(t, "key-1\nkey-2\n")
+	missing := filepath.Join(t.TempDir(), "missing")
+
+	tests := map[string]struct {
+		env      map[string]string
+		want     string
+		wantFile bool
+		wantErr  bool
+		errHas   string
+	}{
+		"no key": {
+			env:  nil,
+			want: "",
+		},
+		"key from variable, never split": {
+			env:  map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": "a,b"},
+			want: "a,b",
+		},
+		"key from variable, spaces trimmed": {
+			env:  map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": " backend-secret\n"},
+			want: "backend-secret",
+		},
+		"variable with only spaces": {
+			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": " \n"},
+			wantErr: true,
+		},
+		"variable with only spaces and a file": {
+			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": " ", "YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
+			wantErr: true,
+			errHas:  "both set",
+		},
+		"key from file": {
+			env:      map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
+			want:     "file-key",
+			wantFile: true,
+		},
+		"both variables set": {
+			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": "backend-secret", "YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
+			wantErr: true,
+		},
+		"file with no key": {
+			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": noKey},
+			wantErr: true,
+		},
+		"file with two keys": {
+			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": twoKeys},
+			wantErr: true,
+		},
+		"missing file": {
+			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": missing},
+			wantErr: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg, file, err := resolveForwardConfig(envFrom(tt.env))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errHas) {
+					t.Fatalf("error %q does not contain %q", err, tt.errHas)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if (file != nil) != tt.wantFile {
+				t.Fatalf("file returned = %v, want %v", file != nil, tt.wantFile)
+			}
+			got := ""
+			if cfg.AuthToken != nil {
+				got = cfg.AuthToken.Token()
+			}
+			if got != tt.want {
+				t.Fatalf("key = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -361,7 +578,7 @@ func TestResolveForwardConfig_BadValues_Error(t *testing.T) {
 		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "0s",
 		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME": "-5m",
 	} {
-		if _, err := resolveForwardConfig(envFrom(map[string]string{name: value})); err == nil {
+		if _, _, err := resolveForwardConfig(envFrom(map[string]string{name: value})); err == nil {
 			t.Errorf("%s=%q: expected an error, got nil", name, value)
 		}
 	}

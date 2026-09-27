@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LukeDevOps/yukon-collector/internal/auth"
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/processor"
 )
@@ -207,7 +208,7 @@ func TestRunHealthcheck_Unreachable_Errors(t *testing.T) {
 // subcommand and the /healthz route cannot drift apart.
 func TestRunHealthcheck_AgainstRegisteredRoutes(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, "token", nil, forward.Config{}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err != nil {
+	if _, err := registerRoutes(mux, nil, auth.NewTokenSet([]string{"token"}), nil, forward.Config{}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
 	srv := httptest.NewServer(mux)

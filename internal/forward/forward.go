@@ -54,13 +54,14 @@ type Config struct {
 	// joined path has a single separator.
 	URL string
 
-	// AuthToken authenticates the collector to the backend, sent as
-	// "Authorization: Bearer <AuthToken>" when set. This is a separate
-	// trust boundary from the agent-facing bearer token the collector
-	// itself checks: the agent authenticates to the collector, the
-	// collector authenticates to the backend, and the two need not share
-	// a secret.
-	AuthToken string
+	// AuthToken yields the key that authenticates the collector to the
+	// backend. The sink asks for it before every request and sends it as
+	// "Authorization: Bearer <key>" when it is not empty. A nil AuthToken
+	// sends no header. This is a separate trust boundary from the
+	// agent-facing bearer token the collector itself checks: the agent
+	// authenticates to the collector, the collector authenticates to the
+	// backend, and the two need not share a secret.
+	AuthToken TokenSource
 
 	// Shards is the number of independent worker/queue pairs. A payload is
 	// routed to a shard by hashing its namespace, service name and
@@ -98,6 +99,27 @@ type Config struct {
 	RetryInitialInterval time.Duration
 	RetryMaxInterval     time.Duration
 	RetryMaxElapsedTime  time.Duration
+}
+
+// TokenSource yields the key a ForwardingSink sends to the backend.
+// The sink calls Token before every request, so the key can change
+// while the sink runs. Token must be safe for concurrent use.
+type TokenSource interface {
+	Token() string
+}
+
+// StaticToken is a TokenSource whose key never changes.
+type StaticToken string
+
+// Token returns t.
+func (t StaticToken) Token() string { return string(t) }
+
+// authToken returns the key to send, or "" when there is none.
+func (c Config) authToken() string {
+	if c.AuthToken == nil {
+		return ""
+	}
+	return c.AuthToken.Token()
 }
 
 func (c Config) withDefaults() Config {
@@ -219,7 +241,7 @@ func NewForwardingSink(cfg Config) (*ForwardingSink, error) {
 		return nil, err
 	}
 	cfg.URL = baseURL
-	if strings.HasPrefix(cfg.URL, "http://") && cfg.AuthToken != "" {
+	if strings.HasPrefix(cfg.URL, "http://") && cfg.authToken() != "" {
 		cfg.Logger.Warn("forward URL uses plain http; the backend auth token is sent unencrypted", "url", cfg.URL)
 	}
 
@@ -495,8 +517,8 @@ func (s *ForwardingSink) attempt(ctx context.Context, item queuedItem) (retryabl
 		return false, 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-protobuf")
-	if s.cfg.AuthToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.cfg.AuthToken)
+	if token := s.cfg.authToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := s.cfg.HTTPClient.Do(req)

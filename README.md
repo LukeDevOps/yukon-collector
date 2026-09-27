@@ -154,10 +154,68 @@ exporter at the same token so its requests carry the header.
 YUKON_COLLECTOR_AUTH_TOKEN=s3cret go run ./cmd/yukon-collector
 ```
 
+To rotate the token without refusing any agent, list more than one,
+separated by commas. A request passes when its token matches any of
+them, so old and new agents both get through while the fleet moves
+over. Spaces around each token are trimmed, and an empty entry (`a,,b`
+or a trailing comma) stops the collector at startup. A token in this
+variable cannot contain a comma.
+
+```
+YUKON_COLLECTOR_AUTH_TOKEN=old-token,new-token go run ./cmd/yukon-collector
+```
+
+A token set in an environment variable shows up in process listings and
+container inspection. To keep it out of them, put the tokens in a file,
+one per line, and name the file in `YUKON_COLLECTOR_AUTH_TOKEN_FILE`
+instead. Blank lines and lines starting with `#` are skipped, so a token
+in a file cannot start with `#`. Spaces around each line are trimmed.
+This is the form a mounted Kubernetes or Docker secret takes. Setting
+both `YUKON_COLLECTOR_AUTH_TOKEN` and
+`YUKON_COLLECTOR_AUTH_TOKEN_FILE` stops the collector at startup.
+
+```
+# agents on the old key until the fleet has rolled
+old-token
+new-token
+```
+
+The collector reads the file again every 30 seconds, so a token added
+to or removed from it takes effect without a restart. Kubernetes updates
+a mounted secret in place and sends no signal, which is why this is a
+timed re-read. If a re-read fails, or finds no token, the collector
+keeps the tokens it last read, logs a warning, and counts it in
+`yukon_collector_token_reload_failures_total{file="auth"}`, so a
+re-read that finds no token cannot lock every agent out. A re-read can
+still catch a file that is half written and apply what it finds until
+the next re-read.
+
+How to change the file depends on how it reaches the collector:
+
+- A Kubernetes secret mounted as a volume updates by itself after the
+  kubelet next syncs, often a minute or two. A secret mounted with
+  `subPath` never updates, so the collector keeps the old tokens.
+- A single file bind-mounted into a container (a Compose `secrets:`
+  entry with `file:`, or `-v ./tokens:/run/secrets/tokens`) pins the
+  file the container saw at start. Edit it in place, or mount its
+  directory instead. Renaming a new file over it leaves the container
+  reading the old one, with no warning.
+- A file the collector reads directly, or one inside a mounted
+  directory, is safest to change by writing a new file and renaming it
+  over the old one, so a re-read never sees it half written.
+- A Docker Swarm secret never changes in place. Rotating one replaces
+  the container, which reads the new file at startup.
+
+At startup there is no
+earlier value to fall back on: a file that cannot be read or holds no
+token stops the collector, even with `YUKON_COLLECTOR_INSECURE_NO_AUTH`
+set.
+
 `/healthz` never requires the token, so liveness/readiness probes keep
 working unauthenticated.
 
-The collector fails closed: if `YUKON_COLLECTOR_AUTH_TOKEN` is unset, it
+The collector fails closed: if neither `YUKON_COLLECTOR_AUTH_TOKEN` nor
+`YUKON_COLLECTOR_AUTH_TOKEN_FILE` is set, it
 refuses to start rather than running unauthenticated. To run without
 auth anyway (local development only — never for anything reachable
 outside your machine), opt out explicitly:
@@ -237,6 +295,7 @@ wildcard), exiting 0 or 1, and never through a proxy. The image's
 | `yukon_collector_ingest_accepted_total` | `payload` | Decoded, valid, handed to the sink |
 | `yukon_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before or by the sink: `content_type`, `too_large`, `read`, `malformed`, `invalid`, `sink` (the sink refused the payload; the response was `503`) |
 | `yukon_collector_auth_rejected_total` | | 401 responses |
+| `yukon_collector_token_reload_failures_total` | `file` | A token file re-read that failed or found no usable token, so the last good value stayed; `file` is `auth` (`YUKON_COLLECTOR_AUTH_TOKEN_FILE`) or `forward` (`YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE`) |
 | `yukon_collector_rate_limited_total` | | 429 responses |
 | `yukon_collector_forward_delivered_total` | `payload` | Backend accepted the payload |
 | `yukon_collector_forward_retries_total` | `payload` | Attempts made after a retryable failure |
@@ -250,7 +309,9 @@ wildcard), exiting 0 or 1, and never through a proxy. The image's
 counter is the one to alert on: every increment is agent data that never
 reached the backend. A steadily rising refused counter means the backend
 is slower than the fleet, or the queue is too small; no data is lost
-while agents keep retrying.
+while agents keep retrying. A rising token reload failures counter means
+a token file is broken and the collector is still on the tokens it last
+read, so a rotation has not taken effect.
 
 ### Forwarding
 
@@ -260,8 +321,9 @@ decoded payload is relayed there instead, as a `POST` to the same
 `/v1/yukon/deltas`, `/v1/yukon/manifest`, and
 `/v1/yukon/static-baseline` paths with the same `application/x-protobuf`
 body. `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN`, if
-set, is sent as a bearer token on those requests. It is a separate secret
-from `YUKON_COLLECTOR_AUTH_TOKEN`: the agent authenticates to the
+set, is sent as a bearer token on those requests. Spaces around its
+value are trimmed, and a value of only spaces stops the collector at
+startup. It is a separate secret from `YUKON_COLLECTOR_AUTH_TOKEN`: the agent authenticates to the
 collector, the collector authenticates to the backend, and the two need
 not match.
 
@@ -271,6 +333,20 @@ YUKON_COLLECTOR_FORWARD_URL=https://backend.example.com \
 YUKON_COLLECTOR_FORWARD_AUTH_TOKEN=backend-secret \
 go run ./cmd/yukon-collector
 ```
+
+To keep the key out of the environment, name a file that holds it in
+`YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE` instead. The file follows the
+same rules as `YUKON_COLLECTOR_AUTH_TOKEN_FILE`: blank lines and `#`
+lines are skipped, and spaces are trimmed. It must hold exactly one key,
+since the collector sends one key and the backend is where several keys
+can overlap during a rotation. Setting both variables stops the
+collector at startup, and so does a file that cannot be read or does
+not hold exactly one key. While forwarding is on, the collector reads
+the file again every 30 seconds and sends the new key from the next
+request on, and the same advice on changing the file applies. A re-read
+that fails, or finds no key or more than one, keeps the last good key,
+logs a warning, and counts in
+`yukon_collector_token_reload_failures_total{file="forward"}`.
 
 Forwarding is asynchronous. The agent gets its `202` as soon as the
 payload is decoded and queued; background workers deliver it, retrying

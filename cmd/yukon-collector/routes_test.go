@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -17,9 +18,12 @@ import (
 
 	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
 
+	"github.com/LukeDevOps/yukon-collector/internal/auth"
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/processor"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
+	"github.com/LukeDevOps/yukon-collector/internal/tokenfile"
+	"github.com/LukeDevOps/yukon-collector/metrics"
 )
 
 // deltaRequest builds a POST to the deltas route carrying the smallest
@@ -80,7 +84,15 @@ func mustRegisterRoutesWithEnv(t *testing.T, mux *http.ServeMux, authToken strin
 // processor configs.
 func mustRegisterRoutesWithProcessors(t *testing.T, mux *http.ServeMux, forwardURL string, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, redactCfg processor.RedactionConfig, authToken string, limiter *ratelimit.Limiter, forwardAuthToken string) *forward.ForwardingSink {
 	t.Helper()
-	fwd, err := registerRoutes(mux, nil, authToken, limiter, forward.Config{URL: forwardURL, AuthToken: forwardAuthToken}, envCfg, nsCfg, redactCfg)
+	var tokens *auth.TokenSet
+	if authToken != "" {
+		tokens = auth.NewTokenSet([]string{authToken})
+	}
+	cfg := forward.Config{URL: forwardURL}
+	if forwardAuthToken != "" {
+		cfg.AuthToken = forward.StaticToken(forwardAuthToken)
+	}
+	fwd, err := registerRoutes(mux, nil, tokens, limiter, cfg, envCfg, nsCfg, redactCfg)
 	if err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
@@ -261,7 +273,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 
 func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, "", nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err == nil {
+	if _, err := registerRoutes(mux, nil, nil, nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err == nil {
 		t.Fatal("expected an error for an unusable forward URL, got nil")
 	}
 }
@@ -500,5 +512,174 @@ func TestRegisterRoutes_RedactionOff_ForwardsManifestWithLiteralAndUnknownFields
 	}
 	if len(site.ProtoReflect().GetUnknown()) == 0 {
 		t.Fatal("forwarded branch site lost its unknown field, want it passed through")
+	}
+}
+
+// waitUntil polls cond until it holds or timeout passes.
+func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !cond() {
+		t.Fatal("condition not met before timeout")
+	}
+}
+
+// watchFile re-reads file every few milliseconds until the test ends.
+// Cleanup waits for the watcher to stop, so no late re-read reaches the
+// reload counter while another test reads it.
+func watchFile(t *testing.T, file *tokenfile.File) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		file.Watch(ctx, 5*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
+// deltaStatus posts a delta batch with the given bearer token, or with
+// no Authorization header when token is empty, and returns the status.
+func deltaStatus(t *testing.T, serverURL, token string) int {
+	t.Helper()
+	req := deltaRequest(t, serverURL)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestRegisterRoutes_TokenList_AnyListedTokenPasses(t *testing.T) {
+	tokens, _, err := resolveAuthTokens(envFrom(map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "old-token, new-token"}))
+	if err != nil {
+		t.Fatalf("resolveAuthTokens: %v", err)
+	}
+	mux := http.NewServeMux()
+	if _, err := registerRoutes(mux, nil, tokens, nil, forward.Config{}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err != nil {
+		t.Fatalf("registerRoutes: %v", err)
+	}
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	for token, want := range map[string]int{
+		"old-token":   http.StatusAccepted,
+		"new-token":   http.StatusAccepted,
+		"other-token": http.StatusUnauthorized,
+		"":            http.StatusUnauthorized,
+	} {
+		if got := deltaStatus(t, server.URL, token); got != want {
+			t.Errorf("token %q: status = %d, want %d", token, got, want)
+		}
+	}
+}
+
+func TestRegisterRoutes_AuthTokenFile_ReReadChangesAcceptedTokens(t *testing.T) {
+	path := writeTokenFile(t, "old-token\n")
+	tokens, file, err := resolveAuthTokens(envFrom(map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": path}))
+	if err != nil {
+		t.Fatalf("resolveAuthTokens: %v", err)
+	}
+	mux := http.NewServeMux()
+	if _, err := registerRoutes(mux, nil, tokens, nil, forward.Config{}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err != nil {
+		t.Fatalf("registerRoutes: %v", err)
+	}
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	watchFile(t, file)
+
+	if got := deltaStatus(t, server.URL, "old-token"); got != http.StatusAccepted {
+		t.Fatalf("old token before the change: status = %d, want %d", got, http.StatusAccepted)
+	}
+
+	replaceTokenFile(t, path, "new-token\n")
+	waitUntil(t, 2*time.Second, func() bool { return tokens.Matches("new-token") })
+	if got := deltaStatus(t, server.URL, "new-token"); got != http.StatusAccepted {
+		t.Fatalf("new token after the change: status = %d, want %d", got, http.StatusAccepted)
+	}
+	if got := deltaStatus(t, server.URL, "old-token"); got != http.StatusUnauthorized {
+		t.Fatalf("old token after the change: status = %d, want %d", got, http.StatusUnauthorized)
+	}
+
+	failuresBefore := metrics.TokenReloadFailures.Value("auth")
+	replaceTokenFile(t, path, "")
+	waitUntil(t, 2*time.Second, func() bool { return metrics.TokenReloadFailures.Value("auth") > failuresBefore })
+	if got := deltaStatus(t, server.URL, "new-token"); got != http.StatusAccepted {
+		t.Fatalf("new token after the file was emptied: status = %d, want %d", got, http.StatusAccepted)
+	}
+}
+
+func TestRegisterRoutes_ForwardTokenFile_NextRequestSendsReloadedKey(t *testing.T) {
+	auths := make(chan string, 8)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	path := writeTokenFile(t, "key-1\n")
+	cfg, file, err := resolveForwardConfig(envFrom(map[string]string{
+		"YUKON_COLLECTOR_FORWARD_URL":             backend.URL,
+		"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": path,
+	}))
+	if err != nil {
+		t.Fatalf("resolveForwardConfig: %v", err)
+	}
+	mux := http.NewServeMux()
+	fwd, err := registerRoutes(mux, nil, nil, nil, cfg, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{})
+	if err != nil {
+		t.Fatalf("registerRoutes: %v", err)
+	}
+	defer fwd.Shutdown(context.Background())
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	watchFile(t, file)
+
+	receive := func() string {
+		t.Helper()
+		select {
+		case got := <-auths:
+			return got
+		case <-time.After(2 * time.Second):
+			t.Fatal("backend received nothing")
+			return ""
+		}
+	}
+
+	if got := deltaStatus(t, server.URL, ""); got != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", got, http.StatusAccepted)
+	}
+	if got := receive(); got != "Bearer key-1" {
+		t.Fatalf("authorization = %q, want %q", got, "Bearer key-1")
+	}
+
+	replaceTokenFile(t, path, "key-2\n")
+	waitUntil(t, 2*time.Second, func() bool { return cfg.AuthToken.Token() == "key-2" })
+	deltaStatus(t, server.URL, "")
+	if got := receive(); got != "Bearer key-2" {
+		t.Fatalf("authorization after the change = %q, want %q", got, "Bearer key-2")
+	}
+
+	failuresBefore := metrics.TokenReloadFailures.Value("forward")
+	replaceTokenFile(t, path, "key-3\nkey-4\n")
+	waitUntil(t, 2*time.Second, func() bool { return metrics.TokenReloadFailures.Value("forward") > failuresBefore })
+	deltaStatus(t, server.URL, "")
+	if got := receive(); got != "Bearer key-2" {
+		t.Fatalf("authorization after a two-key file = %q, want the last good %q", got, "Bearer key-2")
 	}
 }

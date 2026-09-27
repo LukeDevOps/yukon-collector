@@ -13,8 +13,10 @@ import (
 )
 
 // registerRoutes wires the ingest handler and health check onto mux. When
-// authToken is non-empty, the ingest routes require a matching
-// "Authorization: Bearer <authToken>" header. When limiter is non-nil, the
+// authTokens is non-nil, the ingest routes require an
+// "Authorization: Bearer <token>" header whose token is in authTokens.
+// Each request reads the current set, so a token file re-read applies
+// without a restart. When limiter is non-nil, the
 // ingest routes are throttled per client IP, checked before auth so a
 // flood is capped regardless of whether it carries a valid token.
 // /healthz and /metrics stay open, unauthenticated and unthrottled: the
@@ -43,7 +45,7 @@ import (
 // the other processors. It hides string literals and drops unknown
 // fields before any payload is forwarded. A zero redactCfg leaves it out
 // of the chain.
-func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, redactCfg processor.RedactionConfig) (*forward.ForwardingSink, error) {
+func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authTokens *auth.TokenSet, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, redactCfg processor.RedactionConfig) (*forward.ForwardingSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -81,10 +83,10 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	handler.Register(ingestMux)
 
 	var ingestHandler http.Handler = ingestMux
-	if authToken != "" {
-		ingestHandler = auth.RequireBearerToken(authToken, ingestMux)
+	if authTokens != nil {
+		ingestHandler = auth.RequireBearerToken(authTokens, ingestMux)
 	} else {
-		logger.Warn("YUKON_COLLECTOR_AUTH_TOKEN not set; ingest endpoints are unauthenticated")
+		logger.Warn("YUKON_COLLECTOR_AUTH_TOKEN and YUKON_COLLECTOR_AUTH_TOKEN_FILE not set; ingest endpoints are unauthenticated")
 	}
 	if limiter != nil {
 		ingestHandler = limiter.Middleware(ingestHandler)

@@ -19,14 +19,17 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"golang.org/x/time/rate"
 
+	"github.com/LukeDevOps/yukon-collector/internal/auth"
 	"github.com/LukeDevOps/yukon-collector/internal/forward"
 	"github.com/LukeDevOps/yukon-collector/internal/processor"
 	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
+	"github.com/LukeDevOps/yukon-collector/internal/tokenfile"
 )
 
 const (
@@ -39,6 +42,11 @@ const (
 	// a request storm still gets capped.
 	defaultRateLimitRPS   = 5
 	defaultRateLimitBurst = 20
+
+	// authFileLabel and forwardFileLabel name the two token files in logs
+	// and in the reload failure counter.
+	authFileLabel    = "auth"
+	forwardFileLabel = "forward"
 )
 
 func main() {
@@ -58,7 +66,7 @@ func main() {
 
 	addr := resolveAddr(os.Getenv("YUKON_COLLECTOR_ADDR"))
 
-	authToken, err := resolveAuthToken(os.Getenv("YUKON_COLLECTOR_AUTH_TOKEN"), os.Getenv("YUKON_COLLECTOR_INSECURE_NO_AUTH"))
+	authTokens, authFile, err := resolveAuthTokens(os.Getenv)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -79,7 +87,7 @@ func main() {
 		defer limiter.Stop()
 	}
 
-	forwardCfg, err := resolveForwardConfig(os.Getenv)
+	forwardCfg, forwardFile, err := resolveForwardConfig(os.Getenv)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -104,7 +112,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	fwd, err := registerRoutes(mux, logger, authToken, limiter, forwardCfg, envCfg, nsCfg, redactCfg)
+	fwd, err := registerRoutes(mux, logger, authTokens, limiter, forwardCfg, envCfg, nsCfg, redactCfg)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -121,6 +129,13 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if authFile != nil {
+		go authFile.Watch(ctx, tokenfile.ReloadInterval, logger)
+	}
+	if forwardFile != nil && fwd != nil {
+		go forwardFile.Watch(ctx, tokenfile.ReloadInterval, logger)
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -164,20 +179,79 @@ func resolveLogLevel(raw string) (slog.Level, error) {
 	return level, nil
 }
 
-// resolveAuthToken decides the token (if any) the ingest routes require.
-// It fails closed: a missing token is an error unless insecureNoAuthRaw
-// explicitly opts out, so forgetting to set the token stops the server
-// at startup instead of running it unauthenticated.
-func resolveAuthToken(token, insecureNoAuthRaw string) (string, error) {
-	if token != "" {
-		return token, nil
+// resolveAuthTokens decides the tokens (if any) the ingest routes
+// require. YUKON_COLLECTOR_AUTH_TOKEN holds one token or a comma-separated
+// list. YUKON_COLLECTOR_AUTH_TOKEN_FILE names a file with one token per
+// line, which the caller re-reads through the returned tokenfile.File.
+// Setting both is an error.
+//
+// It fails closed. With neither variable set, it is an error unless
+// YUKON_COLLECTOR_INSECURE_NO_AUTH explicitly opts out, and then both
+// results are nil. A token file that cannot be read or holds no token is
+// an error even with the opt-out, since the operator asked for that file.
+func resolveAuthTokens(getenv func(string) string) (*auth.TokenSet, *tokenfile.File, error) {
+	raw := getenv("YUKON_COLLECTOR_AUTH_TOKEN")
+	path := getenv("YUKON_COLLECTOR_AUTH_TOKEN_FILE")
+	if raw != "" && path != "" {
+		return nil, nil, errors.New("YUKON_COLLECTOR_AUTH_TOKEN and YUKON_COLLECTOR_AUTH_TOKEN_FILE are both set; set one")
 	}
-	insecureNoAuth, _ := strconv.ParseBool(insecureNoAuthRaw)
+
+	if path != "" {
+		tokens := new(auth.TokenSet)
+		file, err := tokenfile.Open(path, authFileLabel, tokenfile.AtLeastOne, tokens.Store)
+		if err != nil {
+			return nil, nil, fmt.Errorf("YUKON_COLLECTOR_AUTH_TOKEN_FILE: %w", err)
+		}
+		return tokens, file, nil
+	}
+
+	if raw != "" {
+		list, err := parseTokenList(raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("YUKON_COLLECTOR_AUTH_TOKEN: %w", err)
+		}
+		return auth.NewTokenSet(list), nil, nil
+	}
+
+	insecureNoAuth, _ := strconv.ParseBool(getenv("YUKON_COLLECTOR_INSECURE_NO_AUTH"))
 	if insecureNoAuth {
-		return "", nil
+		return nil, nil, nil
 	}
-	return "", errors.New("YUKON_COLLECTOR_AUTH_TOKEN not set; refusing to start without auth " +
-		"(set YUKON_COLLECTOR_INSECURE_NO_AUTH=1 to run unauthenticated)")
+	return nil, nil, errors.New("neither YUKON_COLLECTOR_AUTH_TOKEN nor YUKON_COLLECTOR_AUTH_TOKEN_FILE is set; " +
+		"refusing to start without auth (set YUKON_COLLECTOR_INSECURE_NO_AUTH=1 to run unauthenticated)")
+}
+
+// parseTokenList splits a comma-separated token list and trims spaces
+// around each token. An empty entry is an error that gives its position.
+func parseTokenList(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	tokens := make([]string, 0, len(parts))
+	for i, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			return nil, fmt.Errorf("entry %d of %d is empty", i+1, len(parts))
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens, nil
+}
+
+// forwardKey is a forward.TokenSource whose key a token file replaces.
+type forwardKey struct {
+	key atomic.Pointer[string]
+}
+
+// Token returns the last key stored, or "" before the first store.
+func (k *forwardKey) Token() string {
+	if p := k.key.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// store keeps the first of tokens. The file check allows only one.
+func (k *forwardKey) store(tokens []string) {
+	k.key.Store(&tokens[0])
 }
 
 // resolveRateLimit decides the per-client-IP request rate and burst size
@@ -223,32 +297,57 @@ func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 // is on; the rest tune it and fall back to the forward package's defaults
 // when unset. A value that is present but not a positive number or
 // duration is an error.
-func resolveForwardConfig(getenv func(string) string) (forward.Config, error) {
-	cfg := forward.Config{
-		URL:       getenv("YUKON_COLLECTOR_FORWARD_URL"),
-		AuthToken: getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN"),
+//
+// The backend key comes from YUKON_COLLECTOR_FORWARD_AUTH_TOKEN, with
+// spaces around it trimmed, or from the file that
+// YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE names, which must hold exactly
+// one token. Setting both is an error, and so is a variable that holds
+// only spaces. For a file, the caller re-reads it through the returned
+// tokenfile.File.
+func resolveForwardConfig(getenv func(string) string) (forward.Config, *tokenfile.File, error) {
+	cfg := forward.Config{URL: getenv("YUKON_COLLECTOR_FORWARD_URL")}
+
+	raw := getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN")
+	token := strings.TrimSpace(raw)
+	path := getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE")
+	var file *tokenfile.File
+	switch {
+	case raw != "" && path != "":
+		return forward.Config{}, nil, errors.New(
+			"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN and YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE are both set; set one")
+	case raw != "" && token == "":
+		return forward.Config{}, nil, errors.New("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN holds only spaces")
+	case path != "":
+		key := new(forwardKey)
+		var err error
+		if file, err = tokenfile.Open(path, forwardFileLabel, tokenfile.ExactlyOne, key.store); err != nil {
+			return forward.Config{}, nil, fmt.Errorf("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE: %w", err)
+		}
+		cfg.AuthToken = key
+	case token != "":
+		cfg.AuthToken = forward.StaticToken(token)
 	}
 
 	var err error
 	if cfg.Shards, err = positiveIntEnv(getenv, "YUKON_COLLECTOR_FORWARD_SHARDS"); err != nil {
-		return forward.Config{}, err
+		return forward.Config{}, nil, err
 	}
 	if cfg.QueueSize, err = positiveIntEnv(getenv, "YUKON_COLLECTOR_FORWARD_QUEUE_SIZE"); err != nil {
-		return forward.Config{}, err
+		return forward.Config{}, nil, err
 	}
 	if cfg.RequestTimeout, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT"); err != nil {
-		return forward.Config{}, err
+		return forward.Config{}, nil, err
 	}
 	if cfg.RetryInitialInterval, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL"); err != nil {
-		return forward.Config{}, err
+		return forward.Config{}, nil, err
 	}
 	if cfg.RetryMaxInterval, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL"); err != nil {
-		return forward.Config{}, err
+		return forward.Config{}, nil, err
 	}
 	if cfg.RetryMaxElapsedTime, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME"); err != nil {
-		return forward.Config{}, err
+		return forward.Config{}, nil, err
 	}
-	return cfg, nil
+	return cfg, file, nil
 }
 
 // positiveIntEnv returns the named variable as an int greater than zero,

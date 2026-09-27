@@ -18,6 +18,12 @@ var (
 	AuthRejected = NewCounter("yukon_collector_auth_rejected_total",
 		"Requests refused for a missing or wrong bearer token.")
 
+	// TokenReloadFailures counts token file re-reads that failed, so the
+	// collector kept the last good value. Its "file" is "auth" for the
+	// agent-facing token file or "forward" for the backend key file.
+	TokenReloadFailures = NewCounter("yukon_collector_token_reload_failures_total",
+		"Token file re-reads that failed or found no usable token, so the last good value stayed.", "file")
+
 	// RateLimited counts requests refused with 429.
 	RateLimited = NewCounter("yukon_collector_rate_limited_total",
 		"Requests refused because the client's rate limit was exceeded.")

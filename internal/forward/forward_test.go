@@ -92,7 +92,7 @@ func TestForwardingSink_Manifest_RelayedToBackendPath(t *testing.T) {
 	defer backend.Close()
 
 	cfg := testConfig(backend.URL)
-	cfg.AuthToken = "backend-secret"
+	cfg.AuthToken = StaticToken("backend-secret")
 	sink := mustNewSink(t, cfg)
 	defer sink.Shutdown(context.Background())
 
@@ -867,5 +867,103 @@ func TestForwardingSink_AcceptRacingShutdown_AcceptedPayloadIsDelivered(t *testi
 	<-shutdownDone
 	if got := delivered.Load(); got != 1 {
 		t.Fatalf("backend received %d payloads, want the 1 accepted", got)
+	}
+}
+
+// swappableToken is a TokenSource a test can change while the sink runs.
+type swappableToken struct {
+	v atomic.Value
+}
+
+func (s *swappableToken) Token() string {
+	token, _ := s.v.Load().(string)
+	return token
+}
+
+func TestForwardingSink_AuthTokenChanges_NextRequestSendsNewKey(t *testing.T) {
+	auths := make(chan string, 8)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	token := new(swappableToken)
+	token.v.Store("old-key")
+	cfg := testConfig(backend.URL)
+	cfg.AuthToken = token
+	sink := mustNewSink(t, cfg)
+	defer sink.Shutdown(context.Background())
+
+	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+	if got := <-auths; got != "Bearer old-key" {
+		t.Fatalf("first authorization = %q, want %q", got, "Bearer old-key")
+	}
+
+	token.v.Store("new-key")
+	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+	if got := <-auths; got != "Bearer new-key" {
+		t.Fatalf("second authorization = %q, want %q", got, "Bearer new-key")
+	}
+}
+
+func TestForwardingSink_EmptyAuthToken_SendsNoHeader(t *testing.T) {
+	for name, source := range map[string]TokenSource{
+		"nil source":   nil,
+		"empty static": StaticToken(""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			auths := make(chan []string, 1)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				auths <- r.Header.Values("Authorization")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+
+			cfg := testConfig(backend.URL)
+			cfg.AuthToken = source
+			sink := mustNewSink(t, cfg)
+			defer sink.Shutdown(context.Background())
+
+			sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+			if got := <-auths; len(got) != 0 {
+				t.Fatalf("authorization headers = %q, want none", got)
+			}
+		})
+	}
+}
+
+func TestNewForwardingSink_PlainHTTPWithKey_Warns(t *testing.T) {
+	token := new(swappableToken)
+	token.v.Store("file-key")
+
+	tests := map[string]struct {
+		url      string
+		token    TokenSource
+		wantWarn bool
+	}{
+		"http with static key":   {url: "http://backend.example.com", token: StaticToken("backend-secret"), wantWarn: true},
+		"http with changing key": {url: "http://backend.example.com", token: token, wantWarn: true},
+		"http without key":       {url: "http://backend.example.com", token: nil, wantWarn: false},
+		"https with key":         {url: "https://backend.example.com", token: StaticToken("backend-secret"), wantWarn: false},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			cfg := testConfig(tt.url)
+			cfg.AuthToken = tt.token
+			cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			sink := mustNewSink(t, cfg)
+			sink.Shutdown(context.Background())
+
+			warned := strings.Contains(logs.String(), "plain http")
+			if warned != tt.wantWarn {
+				t.Fatalf("plain http warning logged = %v, want %v:\n%s", warned, tt.wantWarn, logs.String())
+			}
+			if strings.Contains(logs.String(), "backend-secret") || strings.Contains(logs.String(), "file-key") {
+				t.Fatalf("log shows the key:\n%s", logs.String())
+			}
+		})
 	}
 }
