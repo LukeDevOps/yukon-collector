@@ -85,6 +85,15 @@ func TestRunSubcommand(t *testing.T) {
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	downAddr := down.Listener.Addr().String()
 	down.Close()
+	release := make(chan struct{})
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer hung.Close()
+	defer close(release)
 
 	cases := []struct {
 		name       string
@@ -96,6 +105,7 @@ func TestRunSubcommand(t *testing.T) {
 		{name: "healthy", args: []string{"healthcheck"}, addr: up.Listener.Addr().String(), wantCode: 0},
 		{name: "unreachable", args: []string{"healthcheck"}, addr: downAddr, wantCode: 1, wantStderr: "healthz:"},
 		{name: "bad address", args: []string{"healthcheck"}, addr: "nonsense", wantCode: 1, wantStderr: "healthz url:"},
+		{name: "hung", args: []string{"healthcheck"}, addr: hung.Listener.Addr().String(), wantCode: 1, wantStderr: "deadline exceeded"},
 		{name: "extra argument", args: []string{"healthcheck", "-v"}, wantCode: 2, wantStderr: "usage:"},
 		{name: "unknown subcommand", args: []string{"healthchek"}, wantCode: 2, wantStderr: "usage:"},
 	}
@@ -108,7 +118,14 @@ func TestRunSubcommand(t *testing.T) {
 				return ""
 			}
 			var stderr strings.Builder
-			code := runSubcommand(context.Background(), c.args, getenv, &stderr)
+			done := make(chan int, 1)
+			go func() { done <- runSubcommand(context.Background(), c.args, getenv, &stderr) }()
+			var code int
+			select {
+			case code = <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("probe still running after 3s, want it to give up under the Dockerfile's 3s timeout")
+			}
 			if code != c.wantCode {
 				t.Fatalf("exit code = %d, want %d (stderr %q)", code, c.wantCode, stderr.String())
 			}
