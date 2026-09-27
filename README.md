@@ -205,7 +205,11 @@ YUKON_COLLECTOR_CLIENT_IP_HEADER=X-Forwarded-For go run ./cmd/yukon-collector
 never gated on auth.
 
 `GET /healthz` returns `200` once the server is up, for liveness/readiness
-probes.
+probes. The image has no shell or `curl`, so `yukon-collector healthcheck`
+probes it instead: one GET of `/healthz` on the address
+`YUKON_COLLECTOR_ADDR` names (loopback when the host is empty or a
+wildcard), exiting 0 or 1, and never through a proxy. The image's
+`HEALTHCHECK` runs it.
 
 ### Metrics
 

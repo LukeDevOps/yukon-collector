@@ -93,7 +93,7 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authToken string, l
 	}
 	mux.Handle("/v1/yukon/", ingestHandler)
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET "+healthzPath, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.Handle("GET /metrics", metrics.Handler())

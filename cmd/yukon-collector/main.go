@@ -2,7 +2,9 @@
 // OTLP-style push export. It has no storage of its own: decoded payloads
 // go to an ingest.Sink, either a forward.ForwardingSink that relays them
 // to a backend or, with no backend configured, a LogSink that only logs
-// them.
+// them. With no arguments it serves; "healthcheck" probes the collector's
+// own /healthz and exits 0 or 1, for use as the container image's
+// HEALTHCHECK. Any other argument list exits 2 with a usage line.
 package main
 
 import (
@@ -40,6 +42,10 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		os.Exit(runSubcommand(context.Background(), os.Args[1:], os.Getenv, os.Stderr))
+	}
+
 	level := new(slog.LevelVar)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
@@ -50,10 +56,7 @@ func main() {
 	}
 	level.Set(logLevel)
 
-	addr := os.Getenv("YUKON_COLLECTOR_ADDR")
-	if addr == "" {
-		addr = defaultAddr
-	}
+	addr := resolveAddr(os.Getenv("YUKON_COLLECTOR_ADDR"))
 
 	authToken, err := resolveAuthToken(os.Getenv("YUKON_COLLECTOR_AUTH_TOKEN"), os.Getenv("YUKON_COLLECTOR_INSECURE_NO_AUTH"))
 	if err != nil {
