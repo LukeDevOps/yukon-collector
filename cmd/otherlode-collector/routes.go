@@ -4,12 +4,12 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/LukeDevOps/yukon-collector/ingest"
-	"github.com/LukeDevOps/yukon-collector/internal/auth"
-	"github.com/LukeDevOps/yukon-collector/internal/forward"
-	"github.com/LukeDevOps/yukon-collector/internal/processor"
-	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/ingest"
+	"github.com/otherlodehq/otherlode-collector/internal/auth"
+	"github.com/otherlodehq/otherlode-collector/internal/forward"
+	"github.com/otherlodehq/otherlode-collector/internal/processor"
+	"github.com/otherlodehq/otherlode-collector/internal/ratelimit"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // registerRoutes wires the ingest handler and health check onto mux. When
@@ -61,7 +61,7 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authTokens *auth.To
 		}
 		sink = fwd
 	} else {
-		logger.Warn("YUKON_COLLECTOR_FORWARD_URL not set; ingest payloads are only logged, not forwarded")
+		logger.Warn("OTHERLODE_COLLECTOR_FORWARD_URL not set; ingest payloads are only logged, not forwarded")
 		sink = ingest.NewLogSink(logger)
 	}
 	if envCfg.Value != "" {
@@ -86,14 +86,14 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authTokens *auth.To
 	if authTokens != nil {
 		ingestHandler = auth.RequireBearerToken(authTokens, ingestMux)
 	} else {
-		logger.Warn("YUKON_COLLECTOR_AUTH_TOKEN and YUKON_COLLECTOR_AUTH_TOKEN_FILE not set; ingest endpoints are unauthenticated")
+		logger.Warn("OTHERLODE_COLLECTOR_AUTH_TOKEN and OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE not set; ingest endpoints are unauthenticated")
 	}
 	if limiter != nil {
 		ingestHandler = limiter.Middleware(ingestHandler)
 	} else {
 		logger.Warn("rate limiting disabled; ingest endpoints accept requests unthrottled")
 	}
-	mux.Handle("/v1/yukon/", ingestHandler)
+	mux.Handle("/v1/otherlode/", ingestHandler)
 
 	mux.HandleFunc("GET "+healthzPath, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

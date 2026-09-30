@@ -12,9 +12,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/ingest"
+	"github.com/otherlodehq/otherlode-collector/ingest"
 )
 
 // captureSink is an ingest.Sink that records what it receives, standing in
@@ -26,26 +26,26 @@ import (
 // started with.
 type captureSink struct {
 	mu           sync.Mutex
-	deltaBatches []*yukonpb.DeltaBatch
-	manifests    []*yukonpb.ProbeManifest
-	baselines    []*yukonpb.StaticBaseline
+	deltaBatches []*otherlodepb.DeltaBatch
+	manifests    []*otherlodepb.ProbeManifest
+	baselines    []*otherlodepb.StaticBaseline
 }
 
-func (c *captureSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
+func (c *captureSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBatch) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deltaBatches = append(c.deltaBatches, batch)
 	return nil
 }
 
-func (c *captureSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
+func (c *captureSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeManifest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.manifests = append(c.manifests, manifest)
 	return nil
 }
 
-func (c *captureSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
+func (c *captureSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.StaticBaseline) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.baselines = append(c.baselines, baseline)
@@ -70,22 +70,22 @@ func (c *captureSink) baselineCount() int {
 	return len(c.baselines)
 }
 
-func (c *captureSink) lastDeltaBatch() *yukonpb.DeltaBatch {
+func (c *captureSink) lastDeltaBatch() *otherlodepb.DeltaBatch {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.deltaBatches[len(c.deltaBatches)-1]
 }
 
-func (c *captureSink) lastManifest() *yukonpb.ProbeManifest {
+func (c *captureSink) lastManifest() *otherlodepb.ProbeManifest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.manifests[len(c.manifests)-1]
 }
 
-func (c *captureSink) baselinesSnapshot() []*yukonpb.StaticBaseline {
+func (c *captureSink) baselinesSnapshot() []*otherlodepb.StaticBaseline {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]*yukonpb.StaticBaseline(nil), c.baselines...)
+	return append([]*otherlodepb.StaticBaseline(nil), c.baselines...)
 }
 
 // newReferenceBackend stands up a real ingest.Handler, the same one the
@@ -102,7 +102,7 @@ func newReferenceBackend() (*httptest.Server, *captureSink) {
 
 // newFrontCollector stands up the agent-facing side: a real ingest.Handler
 // backed by a ForwardingSink pointed at backendURL, the same wiring
-// cmd/yukon-collector uses when YUKON_COLLECTOR_FORWARD_URL is set.
+// cmd/otherlode-collector uses when OTHERLODE_COLLECTOR_FORWARD_URL is set.
 func newFrontCollector(t *testing.T, backendURL string) *httptest.Server {
 	t.Helper()
 	fwd := mustNewSink(t, testConfig(backendURL))
@@ -119,19 +119,19 @@ func TestIntegration_DeltaBatch_RoundTripsThroughRealHandlerOnBothEnds(t *testin
 	front := newFrontCollector(t, backend.URL)
 	defer front.Close()
 
-	sent := &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{
+	sent := &otherlodepb.DeltaBatch{
+		Resource: &otherlodepb.ResourceAttributes{
 			ServiceName:       "checkout",
 			ServiceInstanceId: "instance-7",
 			RunId:             "run-1",
 		},
-		Deltas: []*yukonpb.ProbeDelta{
-			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, HitsTotal: 42},
+		Deltas: []*otherlodepb.ProbeDelta{
+			{ClassId: 3, ProbeIndex: 1, Kind: otherlodepb.ProbeKind_BRANCH, HitsTotal: 42},
 		},
-		EndpointDeltas: []*yukonpb.EndpointDelta{
+		EndpointDeltas: []*otherlodepb.EndpointDelta{
 			{EndpointId: 5, FirstSeenAt: 1700000000, HitsTotal: 9},
 		},
-		DependencyDeltas: []*yukonpb.DependencyDelta{
+		DependencyDeltas: []*otherlodepb.DependencyDelta{
 			{DependencyId: 2, FirstLoadedAt: 1700000000, LoadedClassesTotal: 378},
 		},
 	}
@@ -162,51 +162,51 @@ func TestIntegration_Manifest_RoundTripsThroughRealHandlerOnBothEnds(t *testing.
 	front := newFrontCollector(t, backend.URL)
 	defer front.Close()
 
-	sent := &yukonpb.ProbeManifest{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7", RunId: "run-1"},
-		Probes: []*yukonpb.ProbeLocation{
-			{ClassId: 3, ProbeIndex: 1, Kind: yukonpb.ProbeKind_BRANCH, ClassName: "CheckoutService", MethodName: "applyDiscount"},
+	sent := &otherlodepb.ProbeManifest{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7", RunId: "run-1"},
+		Probes: []*otherlodepb.ProbeLocation{
+			{ClassId: 3, ProbeIndex: 1, Kind: otherlodepb.ProbeKind_BRANCH, ClassName: "CheckoutService", MethodName: "applyDiscount"},
 			{
-				ClassId: 3, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, ClassName: "CheckoutService", MethodName: "checkout",
-				Calls: []*yukonpb.CallEdge{
+				ClassId: 3, ProbeIndex: 0, Kind: otherlodepb.ProbeKind_METHOD, ClassName: "CheckoutService", MethodName: "checkout",
+				Calls: []*otherlodepb.CallEdge{
 					{ClassName: "CheckoutService", MethodName: "applyDiscount", MethodDescriptor: "()V", Virtual: true},
 				},
 				ReferencedClasses: []string{"tools.jackson.databind.json.JsonMapper"},
 			},
 		},
-		ClassLocations: []*yukonpb.ClassLocation{
+		ClassLocations: []*otherlodepb.ClassLocation{
 			{ClassId: 3, SuperClassName: "java.lang.Object", InterfaceNames: []string{"Service"}},
 		},
-		Endpoints: []*yukonpb.EndpointLocation{
+		Endpoints: []*otherlodepb.EndpointLocation{
 			{
 				EndpointId:        5,
 				Verb:              "POST",
 				RouteTemplate:     "/checkout/{id}",
 				VerbatimTemplate:  "/checkout/{id}",
 				Framework:         "spring-mvc",
-				DiscoverySource:   yukonpb.EndpointDiscoverySource_REGISTRATION,
+				DiscoverySource:   otherlodepb.EndpointDiscoverySource_REGISTRATION,
 				HandlerClass:      proto.String("CheckoutService"),
 				HandlerMethod:     proto.String("applyDiscount"),
 				HandlerDescriptor: proto.String("()V"),
 			},
 		},
-		DisabledEndpointModules: []*yukonpb.DisabledEndpointModule{
+		DisabledEndpointModules: []*otherlodepb.DisabledEndpointModule{
 			{Module: "ktor-2", Reason: "no supported framework class on the classpath", DisabledAt: 1700000000},
 		},
-		Dependencies: []*yukonpb.DependencyLocation{
+		Dependencies: []*otherlodepb.DependencyLocation{
 			{
 				DependencyId:    2,
-				Identities:      []*yukonpb.DependencyIdentity{{GroupId: "tools.jackson.core", ArtifactId: "jackson-databind", Version: "3.1.5"}},
-				IdentitySource:  yukonpb.DependencyIdentitySource_POM_PROPERTIES,
+				Identities:      []*otherlodepb.DependencyIdentity{{GroupId: "tools.jackson.core", ArtifactId: "jackson-databind", Version: "3.1.5"}},
+				IdentitySource:  otherlodepb.DependencyIdentitySource_POM_PROPERTIES,
 				Location:        "BOOT-INF/lib/jackson-databind-3.1.5.jar",
-				DiscoverySource: yukonpb.DependencyDiscoverySource_STARTUP_CLASSPATH,
+				DiscoverySource: otherlodepb.DependencyDiscoverySource_STARTUP_CLASSPATH,
 				ClassCount:      proto.Int32(880),
 			},
 		},
-		ClassReferences: []*yukonpb.ClassReferences{
+		ClassReferences: []*otherlodepb.ClassReferences{
 			{ClassId: 3, ReferencedClasses: []string{"org.springframework.stereotype.Service"}},
 		},
-		ExternalClasses: []*yukonpb.ExternalClass{
+		ExternalClasses: []*otherlodepb.ExternalClass{
 			{ClassName: "tools.jackson.databind.json.JsonMapper", DependencyId: proto.Int32(2)},
 			{ClassName: "org.example.Missing", Absent: true},
 		},
@@ -240,33 +240,33 @@ func TestIntegration_StaticBaseline_RoundTripsThroughRealHandlerOnBothEnds(t *te
 	front := newFrontCollector(t, backend.URL)
 	defer front.Close()
 
-	resource := &yukonpb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7", RunId: "run-1"}
+	resource := &otherlodepb.ResourceAttributes{ServiceName: "checkout", ServiceInstanceId: "instance-7", RunId: "run-1"}
 	const scannedAt = 1700000000
 
-	chunk0 := &yukonpb.StaticBaseline{
+	chunk0 := &otherlodepb.StaticBaseline{
 		Resource:   resource,
 		ScannedAt:  scannedAt,
 		ChunkIndex: 0,
 		ChunkCount: 2,
-		DeclaredClasses: []*yukonpb.DeclaredClass{
+		DeclaredClasses: []*otherlodepb.DeclaredClass{
 			{
 				ClassName:         "CheckoutService",
-				Methods:           []*yukonpb.DeclaredMethod{{MethodName: "applyDiscount", MethodDescriptor: "()V", ReferencedClasses: []string{"tools.jackson.databind.json.JsonMapper"}}},
+				Methods:           []*otherlodepb.DeclaredMethod{{MethodName: "applyDiscount", MethodDescriptor: "()V", ReferencedClasses: []string{"tools.jackson.databind.json.JsonMapper"}}},
 				ReferencedClasses: []string{"org.springframework.stereotype.Service"},
 			},
 		},
 	}
-	chunk1 := &yukonpb.StaticBaseline{
+	chunk1 := &otherlodepb.StaticBaseline{
 		Resource:   resource,
 		ScannedAt:  scannedAt,
 		ChunkIndex: 1,
 		ChunkCount: 2,
-		DeclaredClasses: []*yukonpb.DeclaredClass{
-			{ClassName: "PaymentService", Methods: []*yukonpb.DeclaredMethod{{MethodName: "charge", MethodDescriptor: "()V"}}},
+		DeclaredClasses: []*otherlodepb.DeclaredClass{
+			{ClassName: "PaymentService", Methods: []*otherlodepb.DeclaredMethod{{MethodName: "charge", MethodDescriptor: "()V"}}},
 		},
 	}
 
-	for _, chunk := range []*yukonpb.StaticBaseline{chunk0, chunk1} {
+	for _, chunk := range []*otherlodepb.StaticBaseline{chunk0, chunk1} {
 		body, err := proto.Marshal(chunk)
 		if err != nil {
 			t.Fatalf("marshal baseline chunk %d: %v", chunk.GetChunkIndex(), err)
@@ -284,7 +284,7 @@ func TestIntegration_StaticBaseline_RoundTripsThroughRealHandlerOnBothEnds(t *te
 	waitFor(t, time.Second, func() bool { return sink.baselineCount() == 2 })
 
 	got := sink.baselinesSnapshot()
-	byChunk := map[int32]*yukonpb.StaticBaseline{got[0].GetChunkIndex(): got[0], got[1].GetChunkIndex(): got[1]}
+	byChunk := map[int32]*otherlodepb.StaticBaseline{got[0].GetChunkIndex(): got[0], got[1].GetChunkIndex(): got[1]}
 	if !proto.Equal(byChunk[0], chunk0) {
 		t.Errorf("backend decoded chunk 0 as %v, want %v", byChunk[0], chunk0)
 	}

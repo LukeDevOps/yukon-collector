@@ -9,10 +9,10 @@ import (
 	"log/slog"
 	"strings"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/ingest"
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/ingest"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // Action says what Environment or Namespace does when a payload already
@@ -87,21 +87,21 @@ func NewEnvironment(next ingest.Sink, cfg EnvironmentConfig, logger *slog.Logger
 
 // AcceptDeltaBatch stamps the batch's resource with the configured
 // environment, then passes the batch to next.
-func (e *Environment) AcceptDeltaBatch(ctx context.Context, batch *yukonpb.DeltaBatch) error {
+func (e *Environment) AcceptDeltaBatch(ctx context.Context, batch *otherlodepb.DeltaBatch) error {
 	e.stamp(batch.GetResource(), "deltas")
 	return e.next.AcceptDeltaBatch(ctx, batch)
 }
 
 // AcceptStaticBaseline stamps the baseline's resource with the
 // configured environment, then passes the baseline to next.
-func (e *Environment) AcceptStaticBaseline(ctx context.Context, baseline *yukonpb.StaticBaseline) error {
+func (e *Environment) AcceptStaticBaseline(ctx context.Context, baseline *otherlodepb.StaticBaseline) error {
 	e.stamp(baseline.GetResource(), "static_baseline")
 	return e.next.AcceptStaticBaseline(ctx, baseline)
 }
 
 // AcceptManifest stamps the manifest's resource with the configured
 // environment, then passes the manifest to next.
-func (e *Environment) AcceptManifest(ctx context.Context, manifest *yukonpb.ProbeManifest) error {
+func (e *Environment) AcceptManifest(ctx context.Context, manifest *otherlodepb.ProbeManifest) error {
 	e.stamp(manifest.GetResource(), "manifest")
 	return e.next.AcceptManifest(ctx, manifest)
 }
@@ -112,7 +112,7 @@ func (e *Environment) AcceptManifest(ctx context.Context, manifest *yukonpb.Prob
 // agent's value only under Upsert. A nil res is left alone:
 // ingest.Handler rejects such a payload before any sink sees it, but an
 // Environment used without the handler must not panic on one.
-func (e *Environment) stamp(res *yukonpb.ResourceAttributes, payload string) {
+func (e *Environment) stamp(res *otherlodepb.ResourceAttributes, payload string) {
 	if res == nil {
 		return
 	}

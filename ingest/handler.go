@@ -1,5 +1,6 @@
-// Package ingest decodes the wire payloads sent by the yukon agent and hands
-// them to a Sink for storage or forwarding. It has no storage of its own.
+// Package ingest decodes the wire payloads sent by the Otherlode agent and
+// hands them to a Sink for storage or forwarding. It has no storage of its
+// own.
 package ingest
 
 import (
@@ -14,9 +15,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // Sink receives decoded payloads. A real backend implements this to persist
@@ -27,9 +28,9 @@ import (
 // error means the payload was not taken: the handler answers 503 and the
 // sender is expected to retry.
 type Sink interface {
-	AcceptDeltaBatch(ctx context.Context, batch *yukonpb.DeltaBatch) error
-	AcceptManifest(ctx context.Context, manifest *yukonpb.ProbeManifest) error
-	AcceptStaticBaseline(ctx context.Context, baseline *yukonpb.StaticBaseline) error
+	AcceptDeltaBatch(ctx context.Context, batch *otherlodepb.DeltaBatch) error
+	AcceptManifest(ctx context.Context, manifest *otherlodepb.ProbeManifest) error
+	AcceptStaticBaseline(ctx context.Context, baseline *otherlodepb.StaticBaseline) error
 }
 
 // maxBodyBytes caps a single request body. A static baseline chunk can
@@ -49,9 +50,9 @@ const contentType = "application/x-protobuf"
 // both sides share these constants instead of each holding its own copy
 // of the literal.
 const (
-	DeltaBatchPath     = "/v1/yukon/deltas"
-	ManifestPath       = "/v1/yukon/manifest"
-	StaticBaselinePath = "/v1/yukon/static-baseline"
+	DeltaBatchPath     = "/v1/otherlode/deltas"
+	ManifestPath       = "/v1/otherlode/manifest"
+	StaticBaselinePath = "/v1/otherlode/static-baseline"
 )
 
 // payloadKind names one payload type for logging and metrics: label is
@@ -81,9 +82,9 @@ func PayloadLabel(path string) string {
 	}
 }
 
-// Handler implements the agent-facing HTTP surface described in the yukon
-// agent's "Transport" design: one POST per flush interval, body is a
-// serialized protobuf message, no gRPC.
+// Handler implements the agent-facing HTTP surface described in the
+// Otherlode agent's "Transport" design: one POST per flush interval, body
+// is a serialized protobuf message, no gRPC.
 type Handler struct {
 	sink   Sink
 	logger *slog.Logger
@@ -99,8 +100,9 @@ func NewHandler(sink Sink, logger *slog.Logger) *Handler {
 }
 
 // Register wires the handler's routes onto mux, matching the paths
-// HttpOtlpStyleExporter posts to: {endpoint}/v1/yukon/deltas,
-// {endpoint}/v1/yukon/manifest, and {endpoint}/v1/yukon/static-baseline.
+// HttpOtlpStyleExporter posts to: {endpoint}/v1/otherlode/deltas,
+// {endpoint}/v1/otherlode/manifest, and
+// {endpoint}/v1/otherlode/static-baseline.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+DeltaBatchPath, h.handleDeltaBatch)
 	mux.HandleFunc("POST "+ManifestPath, h.handleManifest)
@@ -108,7 +110,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
-	var batch yukonpb.DeltaBatch
+	var batch otherlodepb.DeltaBatch
 	if !h.decode(w, r, &batch, deltaBatchKind) {
 		return
 	}
@@ -125,7 +127,7 @@ func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
-	var manifest yukonpb.ProbeManifest
+	var manifest otherlodepb.ProbeManifest
 	if !h.decode(w, r, &manifest, manifestKind) {
 		return
 	}
@@ -142,7 +144,7 @@ func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStaticBaseline(w http.ResponseWriter, r *http.Request) {
-	var baseline yukonpb.StaticBaseline
+	var baseline otherlodepb.StaticBaseline
 	if !h.decode(w, r, &baseline, staticBaselineKind) {
 		return
 	}
@@ -167,7 +169,7 @@ func (h *Handler) handleStaticBaseline(w http.ResponseWriter, r *http.Request) {
 // process, so an instance restarted under a pinned instance ID still
 // names a different run. An empty run_id means the sender did not set
 // it.
-func validateResource(res *yukonpb.ResourceAttributes) error {
+func validateResource(res *otherlodepb.ResourceAttributes) error {
 	if res == nil {
 		return errors.New("missing resource")
 	}
@@ -204,7 +206,7 @@ func isDotSegment(v string) bool {
 // batch. The agent always sends it, even on an empty heartbeat batch,
 // so a batch without it is a broken or foreign sender, not a quiet
 // instance.
-func validateDeltaBatch(batch *yukonpb.DeltaBatch) error {
+func validateDeltaBatch(batch *otherlodepb.DeltaBatch) error {
 	return validateResource(batch.GetResource())
 }
 
@@ -213,7 +215,7 @@ func validateDeltaBatch(batch *yukonpb.DeltaBatch) error {
 // run in load order, so the same class_id can mean a different class in
 // two instances of the same service, or in two runs of one instance. A
 // backend that keys on less than all three would misattribute probes.
-func validateManifest(manifest *yukonpb.ProbeManifest) error {
+func validateManifest(manifest *otherlodepb.ProbeManifest) error {
 	return validateResource(manifest.GetResource())
 }
 
@@ -221,7 +223,7 @@ func validateManifest(manifest *yukonpb.ProbeManifest) error {
 // the resource and scanned_at name the scan, and the chunk fields say
 // whether the scan is complete. A chunk missing any of them can never be
 // attributed or diffed.
-func validateStaticBaseline(baseline *yukonpb.StaticBaseline) error {
+func validateStaticBaseline(baseline *otherlodepb.StaticBaseline) error {
 	if err := validateResource(baseline.GetResource()); err != nil {
 		return err
 	}

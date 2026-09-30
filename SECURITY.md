@@ -5,7 +5,7 @@
 Report a vulnerability privately through GitHub's private vulnerability
 reporting:
 
-https://github.com/LukeDevOps/yukon-collector/security/advisories/new
+https://github.com/otherlodehq/otherlode-collector/security/advisories/new
 
 Do not open a public issue, pull request or discussion about it.
 
@@ -17,7 +17,7 @@ Please include:
 
 ## Scope
 
-The collector runs inside your network. It receives payloads from Yukon
+The collector runs inside your network. It receives payloads from Otherlode
 agents over HTTP and can forward them to a backend with an API key. These
 parts are in scope:
 
@@ -27,8 +27,9 @@ parts are in scope:
 - the `/healthz` and `/metrics` routes, which need no token.
 
 Problems in the agent belong in the
-[yukon](https://github.com/LukeDevOps/yukon) repository. Report problems in
-the hosted Yukon service through the link above.
+[otherlode-agent](https://github.com/otherlodehq/otherlode-agent)
+repository. Report problems in the hosted Otherlode service through the
+link above.
 
 ## Supported versions
 

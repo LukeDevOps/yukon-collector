@@ -36,4 +36,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: docker build -t yukon-collector .
+      - run: docker build -t otherlode-collector .

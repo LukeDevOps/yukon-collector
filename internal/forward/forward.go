@@ -22,10 +22,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/ingest"
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/ingest"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 const (
@@ -293,7 +293,7 @@ type instance struct {
 // instanceOf reads the instance from res. It trims the namespace and
 // service name, as the backend does when it keys a service, so one
 // service never splits across shards. A nil res gives the zero instance.
-func instanceOf(res *yukonpb.ResourceAttributes) instance {
+func instanceOf(res *otherlodepb.ResourceAttributes) instance {
 	return instance{
 		namespace: strings.TrimSpace(res.GetServiceNamespace()),
 		service:   strings.TrimSpace(res.GetServiceName()),
@@ -338,7 +338,7 @@ func (i instance) String() string {
 // failure is logged and counted but returned as nil: resending the same
 // batch cannot fix a marshal failure, so a 503 would only make the agent
 // retry it forever.
-func (s *ForwardingSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
+func (s *ForwardingSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBatch) error {
 	body, err := proto.Marshal(batch)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping delta batch: marshal failed", "error", err)
@@ -352,7 +352,7 @@ func (s *ForwardingSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.Delt
 // service instance. It returns without waiting for delivery, and does not
 // use ctx: the request it comes from ends when the handler returns, long
 // before the queued item is delivered in the background.
-func (s *ForwardingSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
+func (s *ForwardingSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeManifest) error {
 	body, err := proto.Marshal(manifest)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping manifest: marshal failed", "error", err)
@@ -366,7 +366,7 @@ func (s *ForwardingSink) AcceptManifest(_ context.Context, manifest *yukonpb.Pro
 // its service instance. It returns without waiting for delivery, and does
 // not use ctx: the request it comes from ends when the handler returns,
 // long before the queued item is delivered in the background.
-func (s *ForwardingSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
+func (s *ForwardingSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.StaticBaseline) error {
 	body, err := proto.Marshal(baseline)
 	if err != nil {
 		s.cfg.Logger.Warn("dropping static baseline: marshal failed", "error", err)

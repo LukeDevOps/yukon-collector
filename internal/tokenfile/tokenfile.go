@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // ReloadInterval is how often the collector re-reads a token file.

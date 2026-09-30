@@ -1,10 +1,10 @@
-// Command yukon-collector is the ingest/decode layer for the yukon agent's
-// OTLP-style push export. It has no storage of its own: decoded payloads
-// go to an ingest.Sink, either a forward.ForwardingSink that relays them
-// to a backend or, with no backend configured, a LogSink that only logs
-// them. With no arguments it serves; "healthcheck" probes the collector's
-// own /healthz and exits 0 or 1, for use as the container image's
-// HEALTHCHECK. Any other argument list exits 2 with a usage line.
+// Command otherlode-collector is the ingest/decode layer for the
+// Otherlode agent's OTLP-style push export. It has no storage of its own:
+// decoded payloads go to an ingest.Sink, either a forward.ForwardingSink
+// that relays them to a backend or, with no backend configured, a LogSink
+// that only logs them. With no arguments it serves; "healthcheck" probes
+// the collector's own /healthz and exits 0 or 1, for use as the container
+// image's HEALTHCHECK. Any other argument list exits 2 with a usage line.
 package main
 
 import (
@@ -25,11 +25,11 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/LukeDevOps/yukon-collector/internal/auth"
-	"github.com/LukeDevOps/yukon-collector/internal/forward"
-	"github.com/LukeDevOps/yukon-collector/internal/processor"
-	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
-	"github.com/LukeDevOps/yukon-collector/internal/tokenfile"
+	"github.com/otherlodehq/otherlode-collector/internal/auth"
+	"github.com/otherlodehq/otherlode-collector/internal/forward"
+	"github.com/otherlodehq/otherlode-collector/internal/processor"
+	"github.com/otherlodehq/otherlode-collector/internal/ratelimit"
+	"github.com/otherlodehq/otherlode-collector/internal/tokenfile"
 )
 
 const (
@@ -57,14 +57,14 @@ func main() {
 	level := new(slog.LevelVar)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
-	logLevel, err := resolveLogLevel(os.Getenv("YUKON_COLLECTOR_LOG_LEVEL"))
+	logLevel, err := resolveLogLevel(os.Getenv("OTHERLODE_COLLECTOR_LOG_LEVEL"))
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
 	level.Set(logLevel)
 
-	addr := resolveAddr(os.Getenv("YUKON_COLLECTOR_ADDR"))
+	addr := resolveAddr(os.Getenv("OTHERLODE_COLLECTOR_ADDR"))
 
 	authTokens, authFile, err := resolveAuthTokens(os.Getenv)
 	if err != nil {
@@ -72,7 +72,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	rps, burst, err := resolveRateLimit(os.Getenv("YUKON_COLLECTOR_RATE_LIMIT_RPS"), os.Getenv("YUKON_COLLECTOR_RATE_LIMIT_BURST"))
+	rps, burst, err := resolveRateLimit(os.Getenv("OTHERLODE_COLLECTOR_RATE_LIMIT_RPS"), os.Getenv("OTHERLODE_COLLECTOR_RATE_LIMIT_BURST"))
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -80,7 +80,7 @@ func main() {
 	var limiter *ratelimit.Limiter
 	if rps > 0 {
 		var opts []ratelimit.Option
-		if header := os.Getenv("YUKON_COLLECTOR_CLIENT_IP_HEADER"); header != "" {
+		if header := os.Getenv("OTHERLODE_COLLECTOR_CLIENT_IP_HEADER"); header != "" {
 			opts = append(opts, ratelimit.WithClientIPHeader(header))
 		}
 		limiter = ratelimit.New(rps, burst, opts...)
@@ -93,19 +93,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	envCfg, err := resolveEnvironment(os.Getenv("YUKON_COLLECTOR_ENVIRONMENT"), os.Getenv("YUKON_COLLECTOR_ENVIRONMENT_ACTION"))
+	envCfg, err := resolveEnvironment(os.Getenv("OTHERLODE_COLLECTOR_ENVIRONMENT"), os.Getenv("OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION"))
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
-	nsCfg, err := resolveNamespace(os.Getenv("YUKON_COLLECTOR_SERVICE_NAMESPACE"), os.Getenv("YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION"))
+	nsCfg, err := resolveNamespace(os.Getenv("OTHERLODE_COLLECTOR_SERVICE_NAMESPACE"), os.Getenv("OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION"))
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
-	redactCfg, err := resolveRedaction(os.Getenv("YUKON_COLLECTOR_REDACT_BLOCKED_VALUES"), os.Getenv("YUKON_COLLECTOR_REDACT_ALL_LITERALS"))
+	redactCfg, err := resolveRedaction(os.Getenv("OTHERLODE_COLLECTOR_REDACT_BLOCKED_VALUES"), os.Getenv("OTHERLODE_COLLECTOR_REDACT_ALL_LITERALS"))
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -139,7 +139,7 @@ func main() {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		logger.Info("yukon-collector listening", "addr", addr)
+		logger.Info("otherlode-collector listening", "addr", addr)
 		serveErr <- srv.ListenAndServe()
 	}()
 
@@ -166,41 +166,41 @@ func main() {
 	}
 }
 
-// resolveLogLevel parses YUKON_COLLECTOR_LOG_LEVEL (debug, info, warn, or
-// error, in any case). Unset means info.
+// resolveLogLevel parses OTHERLODE_COLLECTOR_LOG_LEVEL (debug, info, warn,
+// or error, in any case). Unset means info.
 func resolveLogLevel(raw string) (slog.Level, error) {
 	if raw == "" {
 		return slog.LevelInfo, nil
 	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(raw)); err != nil {
-		return 0, fmt.Errorf("YUKON_COLLECTOR_LOG_LEVEL: %w", err)
+		return 0, fmt.Errorf("OTHERLODE_COLLECTOR_LOG_LEVEL: %w", err)
 	}
 	return level, nil
 }
 
-// resolveAuthTokens decides the tokens (if any) the ingest routes
-// require. YUKON_COLLECTOR_AUTH_TOKEN holds one token or a comma-separated
-// list. YUKON_COLLECTOR_AUTH_TOKEN_FILE names a file with one token per
-// line, which the caller re-reads through the returned tokenfile.File.
-// Setting both is an error.
+// resolveAuthTokens decides the tokens (if any) the ingest routes require.
+// OTHERLODE_COLLECTOR_AUTH_TOKEN holds one token or a comma-separated list.
+// OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE names a file with one token per line,
+// which the caller re-reads through the returned tokenfile.File. Setting
+// both is an error.
 //
 // It fails closed. With neither variable set, it is an error unless
-// YUKON_COLLECTOR_INSECURE_NO_AUTH explicitly opts out, and then both
+// OTHERLODE_COLLECTOR_INSECURE_NO_AUTH explicitly opts out, and then both
 // results are nil. A token file that cannot be read or holds no token is
 // an error even with the opt-out, since the operator asked for that file.
 func resolveAuthTokens(getenv func(string) string) (*auth.TokenSet, *tokenfile.File, error) {
-	raw := getenv("YUKON_COLLECTOR_AUTH_TOKEN")
-	path := getenv("YUKON_COLLECTOR_AUTH_TOKEN_FILE")
+	raw := getenv("OTHERLODE_COLLECTOR_AUTH_TOKEN")
+	path := getenv("OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE")
 	if raw != "" && path != "" {
-		return nil, nil, errors.New("YUKON_COLLECTOR_AUTH_TOKEN and YUKON_COLLECTOR_AUTH_TOKEN_FILE are both set; set one")
+		return nil, nil, errors.New("OTHERLODE_COLLECTOR_AUTH_TOKEN and OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE are both set; set one")
 	}
 
 	if path != "" {
 		tokens := new(auth.TokenSet)
 		file, err := tokenfile.Open(path, authFileLabel, tokenfile.AtLeastOne, tokens.Store)
 		if err != nil {
-			return nil, nil, fmt.Errorf("YUKON_COLLECTOR_AUTH_TOKEN_FILE: %w", err)
+			return nil, nil, fmt.Errorf("OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE: %w", err)
 		}
 		return tokens, file, nil
 	}
@@ -208,17 +208,17 @@ func resolveAuthTokens(getenv func(string) string) (*auth.TokenSet, *tokenfile.F
 	if raw != "" {
 		list, err := parseTokenList(raw)
 		if err != nil {
-			return nil, nil, fmt.Errorf("YUKON_COLLECTOR_AUTH_TOKEN: %w", err)
+			return nil, nil, fmt.Errorf("OTHERLODE_COLLECTOR_AUTH_TOKEN: %w", err)
 		}
 		return auth.NewTokenSet(list), nil, nil
 	}
 
-	insecureNoAuth, _ := strconv.ParseBool(getenv("YUKON_COLLECTOR_INSECURE_NO_AUTH"))
+	insecureNoAuth, _ := strconv.ParseBool(getenv("OTHERLODE_COLLECTOR_INSECURE_NO_AUTH"))
 	if insecureNoAuth {
 		return nil, nil, nil
 	}
-	return nil, nil, errors.New("neither YUKON_COLLECTOR_AUTH_TOKEN nor YUKON_COLLECTOR_AUTH_TOKEN_FILE is set; " +
-		"refusing to start without auth (set YUKON_COLLECTOR_INSECURE_NO_AUTH=1 to run unauthenticated)")
+	return nil, nil, errors.New("neither OTHERLODE_COLLECTOR_AUTH_TOKEN nor OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE is set; " +
+		"refusing to start without auth (set OTHERLODE_COLLECTOR_INSECURE_NO_AUTH=1 to run unauthenticated)")
 }
 
 // parseTokenList splits a comma-separated token list and trims spaces
@@ -265,7 +265,7 @@ func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 	if rpsRaw != "" {
 		parsed, err := strconv.ParseFloat(rpsRaw, 64)
 		if err != nil {
-			return 0, 0, fmt.Errorf("YUKON_COLLECTOR_RATE_LIMIT_RPS: %w", err)
+			return 0, 0, fmt.Errorf("OTHERLODE_COLLECTOR_RATE_LIMIT_RPS: %w", err)
 		}
 		rps = parsed
 	}
@@ -274,54 +274,54 @@ func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 	if burstRaw != "" {
 		parsed, err := strconv.Atoi(burstRaw)
 		if err != nil {
-			return 0, 0, fmt.Errorf("YUKON_COLLECTOR_RATE_LIMIT_BURST: %w", err)
+			return 0, 0, fmt.Errorf("OTHERLODE_COLLECTOR_RATE_LIMIT_BURST: %w", err)
 		}
 		burst = parsed
 	}
 
 	if math.IsNaN(rps) || math.IsInf(rps, 0) {
-		return 0, 0, errors.New("YUKON_COLLECTOR_RATE_LIMIT_RPS must be a finite number")
+		return 0, 0, errors.New("OTHERLODE_COLLECTOR_RATE_LIMIT_RPS must be a finite number")
 	}
 	if rps < 0 {
-		return 0, 0, errors.New("YUKON_COLLECTOR_RATE_LIMIT_RPS must not be negative")
+		return 0, 0, errors.New("OTHERLODE_COLLECTOR_RATE_LIMIT_RPS must not be negative")
 	}
 	if rps > 0 && burst <= 0 {
-		return 0, 0, errors.New("YUKON_COLLECTOR_RATE_LIMIT_BURST must be positive when rate limiting is enabled")
+		return 0, 0, errors.New("OTHERLODE_COLLECTOR_RATE_LIMIT_BURST must be positive when rate limiting is enabled")
 	}
 
 	return rate.Limit(rps), burst, nil
 }
 
 // resolveForwardConfig reads the forwarding settings from the environment
-// via getenv. Only YUKON_COLLECTOR_FORWARD_URL decides whether forwarding
-// is on; the rest tune it and fall back to the forward package's defaults
-// when unset. A value that is present but not a positive number or
+// via getenv. Only OTHERLODE_COLLECTOR_FORWARD_URL decides whether
+// forwarding is on; the rest tune it and fall back to the forward package's
+// defaults when unset. A value that is present but not a positive number or
 // duration is an error.
 //
-// The backend key comes from YUKON_COLLECTOR_FORWARD_AUTH_TOKEN, with
+// The backend key comes from OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN, with
 // spaces around it trimmed, or from the file that
-// YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE names, which must hold exactly
-// one token. Setting both is an error, and so is a variable that holds
-// only spaces. For a file, the caller re-reads it through the returned
-// tokenfile.File.
+// OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE names, which must hold
+// exactly one token. Setting both is an error, and so is a variable that
+// holds only spaces. For a file, the caller re-reads it through the
+// returned tokenfile.File.
 func resolveForwardConfig(getenv func(string) string) (forward.Config, *tokenfile.File, error) {
-	cfg := forward.Config{URL: getenv("YUKON_COLLECTOR_FORWARD_URL")}
+	cfg := forward.Config{URL: getenv("OTHERLODE_COLLECTOR_FORWARD_URL")}
 
-	raw := getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN")
+	raw := getenv("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN")
 	token := strings.TrimSpace(raw)
-	path := getenv("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE")
+	path := getenv("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE")
 	var file *tokenfile.File
 	switch {
 	case raw != "" && path != "":
 		return forward.Config{}, nil, errors.New(
-			"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN and YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE are both set; set one")
+			"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN and OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE are both set; set one")
 	case raw != "" && token == "":
-		return forward.Config{}, nil, errors.New("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN holds only spaces")
+		return forward.Config{}, nil, errors.New("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN holds only spaces")
 	case path != "":
 		key := new(forwardKey)
 		var err error
 		if file, err = tokenfile.Open(path, forwardFileLabel, tokenfile.ExactlyOne, key.store); err != nil {
-			return forward.Config{}, nil, fmt.Errorf("YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE: %w", err)
+			return forward.Config{}, nil, fmt.Errorf("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE: %w", err)
 		}
 		cfg.AuthToken = key
 	case token != "":
@@ -329,22 +329,22 @@ func resolveForwardConfig(getenv func(string) string) (forward.Config, *tokenfil
 	}
 
 	var err error
-	if cfg.Shards, err = positiveIntEnv(getenv, "YUKON_COLLECTOR_FORWARD_SHARDS"); err != nil {
+	if cfg.Shards, err = positiveIntEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_SHARDS"); err != nil {
 		return forward.Config{}, nil, err
 	}
-	if cfg.QueueSize, err = positiveIntEnv(getenv, "YUKON_COLLECTOR_FORWARD_QUEUE_SIZE"); err != nil {
+	if cfg.QueueSize, err = positiveIntEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE"); err != nil {
 		return forward.Config{}, nil, err
 	}
-	if cfg.RequestTimeout, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT"); err != nil {
+	if cfg.RequestTimeout, err = positiveDurationEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT"); err != nil {
 		return forward.Config{}, nil, err
 	}
-	if cfg.RetryInitialInterval, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL"); err != nil {
+	if cfg.RetryInitialInterval, err = positiveDurationEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL"); err != nil {
 		return forward.Config{}, nil, err
 	}
-	if cfg.RetryMaxInterval, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL"); err != nil {
+	if cfg.RetryMaxInterval, err = positiveDurationEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL"); err != nil {
 		return forward.Config{}, nil, err
 	}
-	if cfg.RetryMaxElapsedTime, err = positiveDurationEnv(getenv, "YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME"); err != nil {
+	if cfg.RetryMaxElapsedTime, err = positiveDurationEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME"); err != nil {
 		return forward.Config{}, nil, err
 	}
 	return cfg, file, nil
@@ -385,23 +385,24 @@ func positiveDurationEnv(getenv func(string) string, name string) (time.Duration
 }
 
 // resolveEnvironment builds the processor.EnvironmentConfig from
-// YUKON_COLLECTOR_ENVIRONMENT and YUKON_COLLECTOR_ENVIRONMENT_ACTION. A
-// value that is blank after trimming space turns the processor off. An
-// action with no value is an error: the operator meant to label
-// payloads, and starting without the label would hide that mistake.
+// OTHERLODE_COLLECTOR_ENVIRONMENT and
+// OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION. A value that is blank after
+// trimming space turns the processor off. An action with no value is an
+// error: the operator meant to label payloads, and starting without the
+// label would hide that mistake.
 func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig, error) {
 	value := strings.TrimSpace(valueRaw)
 
 	action, err := processor.ParseAction(actionRaw)
 	if err != nil {
-		return processor.EnvironmentConfig{}, fmt.Errorf("YUKON_COLLECTOR_ENVIRONMENT_ACTION: %w", err)
+		return processor.EnvironmentConfig{}, fmt.Errorf("OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION: %w", err)
 	}
 
 	if value == "" {
 		if actionRaw != "" {
 			return processor.EnvironmentConfig{}, errors.New(
-				"YUKON_COLLECTOR_ENVIRONMENT_ACTION is set but YUKON_COLLECTOR_ENVIRONMENT is empty; " +
-					"set YUKON_COLLECTOR_ENVIRONMENT or unset YUKON_COLLECTOR_ENVIRONMENT_ACTION")
+				"OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION is set but OTHERLODE_COLLECTOR_ENVIRONMENT is empty; " +
+					"set OTHERLODE_COLLECTOR_ENVIRONMENT or unset OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION")
 		}
 		return processor.EnvironmentConfig{}, nil
 	}
@@ -410,8 +411,8 @@ func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig
 }
 
 // resolveNamespace builds the processor.NamespaceConfig from
-// YUKON_COLLECTOR_SERVICE_NAMESPACE and
-// YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION. A value that is blank after
+// OTHERLODE_COLLECTOR_SERVICE_NAMESPACE and
+// OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION. A value that is blank after
 // trimming space turns the processor off, so each agent's namespace
 // passes through unchanged. An action with no value is an error: the
 // operator meant to set a namespace, and starting without it would hide
@@ -422,27 +423,27 @@ func resolveNamespace(valueRaw, actionRaw string) (processor.NamespaceConfig, er
 
 	action, err := processor.ParseAction(actionRaw)
 	if err != nil {
-		return processor.NamespaceConfig{}, fmt.Errorf("YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION: %w", err)
+		return processor.NamespaceConfig{}, fmt.Errorf("OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION: %w", err)
 	}
 
 	if value == "" {
 		if actionRaw != "" {
 			return processor.NamespaceConfig{}, errors.New(
-				"YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION is set but YUKON_COLLECTOR_SERVICE_NAMESPACE is empty; " +
-					"set YUKON_COLLECTOR_SERVICE_NAMESPACE or unset YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION")
+				"OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION is set but OTHERLODE_COLLECTOR_SERVICE_NAMESPACE is empty; " +
+					"set OTHERLODE_COLLECTOR_SERVICE_NAMESPACE or unset OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION")
 		}
 		return processor.NamespaceConfig{}, nil
 	}
 	if value == "." || value == ".." {
-		return processor.NamespaceConfig{}, fmt.Errorf("YUKON_COLLECTOR_SERVICE_NAMESPACE is %q, which no URL path can name", value)
+		return processor.NamespaceConfig{}, fmt.Errorf("OTHERLODE_COLLECTOR_SERVICE_NAMESPACE is %q, which no URL path can name", value)
 	}
 
 	return processor.NamespaceConfig{Value: value, Action: action}, nil
 }
 
 // resolveRedaction builds the processor.RedactionConfig from
-// YUKON_COLLECTOR_REDACT_BLOCKED_VALUES and
-// YUKON_COLLECTOR_REDACT_ALL_LITERALS. The first holds one regular
+// OTHERLODE_COLLECTOR_REDACT_BLOCKED_VALUES and
+// OTHERLODE_COLLECTOR_REDACT_ALL_LITERALS. The first holds one regular
 // expression per line, since a comma can appear inside a pattern. A line
 // that is blank after trimming space is skipped. Other lines are used as
 // written, apart from a trailing carriage return. A pattern that does not
@@ -458,7 +459,7 @@ func resolveRedaction(blockedRaw, allLiteralsRaw string) (processor.RedactionCon
 		}
 		re, err := regexp.Compile(line)
 		if err != nil {
-			return processor.RedactionConfig{}, fmt.Errorf("YUKON_COLLECTOR_REDACT_BLOCKED_VALUES line %d: %w", i+1, err)
+			return processor.RedactionConfig{}, fmt.Errorf("OTHERLODE_COLLECTOR_REDACT_BLOCKED_VALUES line %d: %w", i+1, err)
 		}
 		cfg.BlockedValues = append(cfg.BlockedValues, re)
 	}
@@ -466,7 +467,7 @@ func resolveRedaction(blockedRaw, allLiteralsRaw string) (processor.RedactionCon
 	if allLiteralsRaw != "" {
 		all, err := strconv.ParseBool(allLiteralsRaw)
 		if err != nil {
-			return processor.RedactionConfig{}, fmt.Errorf("YUKON_COLLECTOR_REDACT_ALL_LITERALS: %w", err)
+			return processor.RedactionConfig{}, fmt.Errorf("OTHERLODE_COLLECTOR_REDACT_ALL_LITERALS: %w", err)
 		}
 		cfg.AllLiterals = all
 	}

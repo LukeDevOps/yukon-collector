@@ -5,15 +5,15 @@ import (
 	"errors"
 	"testing"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // resourceWithNamespace returns a valid resource. It sets the namespace
 // only when ns is non-nil, so a test can send an absent one.
-func resourceWithNamespace(ns *string) *yukonpb.ResourceAttributes {
-	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
+func resourceWithNamespace(ns *string) *otherlodepb.ResourceAttributes {
+	res := &otherlodepb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 	if ns != nil {
 		res.SetServiceNamespace(*ns)
 	}
@@ -25,11 +25,11 @@ func ptr(s string) *string { return &s }
 // sendEach passes one payload of each kind through ns. Each payload
 // carries a resource built by newRes. sendEach returns each payload's
 // resource under its payload label.
-func sendEach(t *testing.T, ns *Namespace, newRes func() *yukonpb.ResourceAttributes) map[string]*yukonpb.ResourceAttributes {
+func sendEach(t *testing.T, ns *Namespace, newRes func() *otherlodepb.ResourceAttributes) map[string]*otherlodepb.ResourceAttributes {
 	t.Helper()
-	batch := &yukonpb.DeltaBatch{Resource: newRes()}
-	manifest := &yukonpb.ProbeManifest{Resource: newRes()}
-	baseline := &yukonpb.StaticBaseline{Resource: newRes()}
+	batch := &otherlodepb.DeltaBatch{Resource: newRes()}
+	manifest := &otherlodepb.ProbeManifest{Resource: newRes()}
+	baseline := &otherlodepb.StaticBaseline{Resource: newRes()}
 	if err := ns.AcceptDeltaBatch(context.Background(), batch); err != nil {
 		t.Fatalf("deltas: unexpected error: %v", err)
 	}
@@ -39,7 +39,7 @@ func sendEach(t *testing.T, ns *Namespace, newRes func() *yukonpb.ResourceAttrib
 	if err := ns.AcceptStaticBaseline(context.Background(), baseline); err != nil {
 		t.Fatalf("static_baseline: unexpected error: %v", err)
 	}
-	return map[string]*yukonpb.ResourceAttributes{
+	return map[string]*otherlodepb.ResourceAttributes{
 		"deltas":          batch.GetResource(),
 		"manifest":        manifest.GetResource(),
 		"static_baseline": baseline.GetResource(),
@@ -60,9 +60,9 @@ func TestNamespace_EveryPayload_ReachesNextAsSamePointer(t *testing.T) {
 	next := &recordingSink{}
 	ns := NewNamespace(next, NamespaceConfig{Value: "team-a"}, nil)
 
-	batch := &yukonpb.DeltaBatch{Resource: resourceWithNamespace(nil)}
-	manifest := &yukonpb.ProbeManifest{Resource: resourceWithNamespace(nil)}
-	baseline := &yukonpb.StaticBaseline{Resource: resourceWithNamespace(nil)}
+	batch := &otherlodepb.DeltaBatch{Resource: resourceWithNamespace(nil)}
+	manifest := &otherlodepb.ProbeManifest{Resource: resourceWithNamespace(nil)}
+	baseline := &otherlodepb.StaticBaseline{Resource: resourceWithNamespace(nil)}
 	_ = ns.AcceptDeltaBatch(context.Background(), batch)
 	_ = ns.AcceptManifest(context.Background(), manifest)
 	_ = ns.AcceptStaticBaseline(context.Background(), baseline)
@@ -90,7 +90,7 @@ func TestNamespace_AgentSentNone_Stamped(t *testing.T) {
 				before := mismatchCounts()
 				ns := NewNamespace(&recordingSink{}, NamespaceConfig{Value: "team-a", Action: action}, nil)
 
-				resources := sendEach(t, ns, func() *yukonpb.ResourceAttributes { return resourceWithNamespace(agent) })
+				resources := sendEach(t, ns, func() *otherlodepb.ResourceAttributes { return resourceWithNamespace(agent) })
 
 				for payload, res := range resources {
 					if got := res.GetServiceNamespace(); got != "team-a" {
@@ -112,7 +112,7 @@ func TestNamespace_Insert_DifferentAgentValue_KeptAndMismatchCounted(t *testing.
 	before := mismatchCounts()
 	ns := NewNamespace(&recordingSink{}, NamespaceConfig{Value: "team-a", Action: Insert}, nil)
 
-	resources := sendEach(t, ns, func() *yukonpb.ResourceAttributes { return resourceWithNamespace(ptr("team-b")) })
+	resources := sendEach(t, ns, func() *otherlodepb.ResourceAttributes { return resourceWithNamespace(ptr("team-b")) })
 
 	after := mismatchCounts()
 	for payload, res := range resources {
@@ -129,7 +129,7 @@ func TestNamespace_Upsert_DifferentAgentValue_OverwrittenAndMismatchCounted(t *t
 	before := mismatchCounts()
 	ns := NewNamespace(&recordingSink{}, NamespaceConfig{Value: "team-a", Action: Upsert}, nil)
 
-	resources := sendEach(t, ns, func() *yukonpb.ResourceAttributes { return resourceWithNamespace(ptr("team-b")) })
+	resources := sendEach(t, ns, func() *otherlodepb.ResourceAttributes { return resourceWithNamespace(ptr("team-b")) })
 
 	after := mismatchCounts()
 	for payload, res := range resources {
@@ -148,7 +148,7 @@ func TestNamespace_EqualAfterTrim_KeptAndNotCounted(t *testing.T) {
 			before := mismatchCounts()
 			ns := NewNamespace(&recordingSink{}, NamespaceConfig{Value: "team-a", Action: action}, nil)
 
-			resources := sendEach(t, ns, func() *yukonpb.ResourceAttributes { return resourceWithNamespace(ptr(" team-a ")) })
+			resources := sendEach(t, ns, func() *otherlodepb.ResourceAttributes { return resourceWithNamespace(ptr(" team-a ")) })
 
 			after := mismatchCounts()
 			for payload, res := range resources {
@@ -167,7 +167,7 @@ func TestNamespace_CaseDiffers_IsAMismatch(t *testing.T) {
 	before := metrics.NamespaceMismatch.Value("deltas")
 	ns := NewNamespace(&recordingSink{}, NamespaceConfig{Value: "team-a", Action: Upsert}, nil)
 
-	batch := &yukonpb.DeltaBatch{Resource: resourceWithNamespace(ptr("Team-A"))}
+	batch := &otherlodepb.DeltaBatch{Resource: resourceWithNamespace(ptr("Team-A"))}
 	if err := ns.AcceptDeltaBatch(context.Background(), batch); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestNamespace_MismatchNotCountedAsEnvironmentMismatch(t *testing.T) {
 	before := metrics.EnvironmentMismatch.Value("deltas")
 	ns := NewNamespace(&recordingSink{}, NamespaceConfig{Value: "team-a"}, nil)
 
-	batch := &yukonpb.DeltaBatch{Resource: resourceWithNamespace(ptr("team-b"))}
+	batch := &otherlodepb.DeltaBatch{Resource: resourceWithNamespace(ptr("team-b"))}
 	if err := ns.AcceptDeltaBatch(context.Background(), batch); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestNamespace_NilResource_NoPanicReachesNext(t *testing.T) {
 	next := &recordingSink{}
 	ns := NewNamespace(next, NamespaceConfig{Value: "team-a"}, nil)
 
-	batch := &yukonpb.DeltaBatch{}
+	batch := &otherlodepb.DeltaBatch{}
 	if err := ns.AcceptDeltaBatch(context.Background(), batch); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,13 +211,13 @@ func TestNamespace_NextError_Returned(t *testing.T) {
 
 	for name, accept := range map[string]func() error{
 		"deltas": func() error {
-			return ns.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{Resource: resourceWithNamespace(nil)})
+			return ns.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{Resource: resourceWithNamespace(nil)})
 		},
 		"manifest": func() error {
-			return ns.AcceptManifest(context.Background(), &yukonpb.ProbeManifest{Resource: resourceWithNamespace(nil)})
+			return ns.AcceptManifest(context.Background(), &otherlodepb.ProbeManifest{Resource: resourceWithNamespace(nil)})
 		},
 		"static_baseline": func() error {
-			return ns.AcceptStaticBaseline(context.Background(), &yukonpb.StaticBaseline{Resource: resourceWithNamespace(nil)})
+			return ns.AcceptStaticBaseline(context.Background(), &otherlodepb.StaticBaseline{Resource: resourceWithNamespace(nil)})
 		},
 	} {
 		if err := accept(); !errors.Is(err, wantErr) {

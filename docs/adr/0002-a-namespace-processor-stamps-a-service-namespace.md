@@ -4,17 +4,17 @@ status: accepted
 
 # A namespace processor stamps a service namespace
 
-Decided on 2026-09-26 in a grilling session that spanned this repo, the agent and `yukon-server` (agent ADR 0045, server ADR 0038).
+Decided on 2026-09-26 in a grilling session that spanned this repo, the agent and `otherlode-server` (agent ADR 0045).
 
 A service is known by its namespace and its name. Often one collector serves one team, and setting that team's namespace once on the collector is easier than setting it on every agent. One collector can also serve every namespace and change nothing.
 
 ## The design
 
-- A `Namespace` processor, built like the `Environment` processor and configured the same way: `YUKON_COLLECTOR_SERVICE_NAMESPACE` holds the value, and `YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION` is `insert` (the default) or `upsert`. A blank value turns the processor off, so a collector with no setting passes each agent's namespace through.
-- `insert` fills in a payload that names no namespace. `upsert` also replaces one that names a different namespace. A difference is counted in `yukon_collector_namespace_mismatch_total{payload}`, whichever action is set.
+- A `Namespace` processor, built like the `Environment` processor and configured the same way: `OTHERLODE_COLLECTOR_SERVICE_NAMESPACE` holds the value, and `OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION` is `insert` (the default) or `upsert`. A blank value turns the processor off, so a collector with no setting passes each agent's namespace through.
+- `insert` fills in a payload that names no namespace. `upsert` also replaces one that names a different namespace. A difference is counted in `otherlode_collector_namespace_mismatch_total{payload}`, whichever action is set.
 - It stamps delta batches, probe manifests and static baselines, as the `Environment` processor does.
 - The forwarding shard key becomes namespace, service and instance, since namespace is part of the service's identity.
-- `ingest.Handler` rejects a payload with a `400` when its service name is blank, or its service name or namespace is `.` or `..` after trimming. The backend reads a service at a URL path that holds both, and browsers drop dot segments even when they are escaped, so such a service could never be opened, and a namespace `..` would lead to another service. `YUKON_COLLECTOR_SERVICE_NAMESPACE` refuses the same two values at startup.
+- `ingest.Handler` rejects a payload with a `400` when its service name is blank, or its service name or namespace is `.` or `..` after trimming. The backend reads a service at a URL path that holds both, and browsers drop dot segments even when they are escaped, so such a service could never be opened, and a namespace `..` would lead to another service. `OTHERLODE_COLLECTOR_SERVICE_NAMESPACE` refuses the same two values at startup.
 
 ## Considered options
 

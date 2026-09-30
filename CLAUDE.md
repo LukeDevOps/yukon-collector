@@ -1,4 +1,4 @@
-# yukon-collector
+# otherlode-collector
 
 ## Comments
 

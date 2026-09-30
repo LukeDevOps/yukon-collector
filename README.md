@@ -1,8 +1,9 @@
-# yukon-collector
+# otherlode-collector
 
-The ingest/decode layer for [yukon](https://github.com/LukeDevOps/yukon)'s
-OTLP-style push export. Yukon is a Java agent that instruments a running JVM
-to find dead code paths — endpoints, methods, and branches that are
+The ingest/decode layer for the
+[Otherlode agent](https://github.com/otherlodehq/otherlode-agent)'s
+OTLP-style push export. Otherlode is a Java agent that instruments a
+running JVM to find dead code paths — endpoints, methods, and branches that are
 reachable but never actually exercised. Each instrumented instance pushes
 periodic batches (hit counts, probe metadata) to a collector over HTTP.
 This repo is that collector: it decodes the wire payloads and hands them off
@@ -21,9 +22,9 @@ be worth open-sourcing on its own, independent of any particular backend.
 ## How it fits together
 
 ```
-yukon agent  --POST protobuf-->  yukon-collector  -->  Sink
-(JVM, pushes                     (this repo,            (real backend:
- every 30-60s)                    decode only)           storage, aggregation)
+Otherlode agent  --POST protobuf-->  otherlode-collector  -->  Sink
+(JVM, pushes                         (this repo,                (real backend:
+ every 30-60s)                        decode only)               storage, aggregation)
 ```
 
 The agent's `HttpOtlpStyleExporter` posts three payload types, matching
@@ -33,18 +34,18 @@ instance ID, environment, and a run ID. A service is known by its
 namespace and name together. The agent makes a fresh random run ID for each process, so an
 instance restarted under a pinned instance ID still names a different run.
 
-- `POST /v1/yukon/deltas` — a `DeltaBatch`: resource attributes plus
+- `POST /v1/otherlode/deltas` — a `DeltaBatch`: resource attributes plus
   per-probe hit counts since the last successful flush. Sent every flush interval even when empty, as a
   liveness heartbeat — an idle instance and a dead one both need to be
   distinguishable from silence. It also carries endpoint hit totals, one
   entry per HTTP endpoint a web framework has matched a request to.
-- `POST /v1/yukon/manifest` — a `ProbeManifest`: resource attributes
+- `POST /v1/otherlode/manifest` — a `ProbeManifest`: resource attributes
   plus a map from probe IDs to their source location (class, method,
   line, branch index), sent incrementally so the collector only needs metadata for probes it hasn't already seen.
   It also carries the endpoints a web framework serves and any endpoint
   module that switched itself off after a linkage failure against a
   framework version it does not match.
-- `POST /v1/yukon/static-baseline` — a `StaticBaseline`: an opt-in,
+- `POST /v1/otherlode/static-baseline` — a `StaticBaseline`: an opt-in,
   once-per-process static scan of a service instance's classes, sent as
   one or more chunks. Every chunk carries the same instance and
   `scanned_at`, so `(instance, scanned_at)` identifies one scan; a
@@ -57,14 +58,15 @@ and plain HTTP avoids shading grpc-java/Netty into every instrumented JVM.
 See the agent's own `CLAUDE.md` ("Transport", "Hit-data recording &
 export") for the full reasoning; the schema itself lives in the agent
 repo and is published to the Buf Schema Registry as
-[`buf.build/lukedevops-oss/yukon`](https://buf.build/lukedevops-oss/yukon).
+[`buf.build/otherlode/otherlode`](https://buf.build/otherlode/otherlode).
 
 ## Architecture
 
-- `buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go` — Go bindings
-  for the yukon wire schema, generated remotely by the BSR and pulled in
-  as an ordinary Go module dependency. No local `.proto` copy or `protoc`
-  step in this repo.
+- `buf.build/gen/go/otherlode/otherlode/protocolbuffers/go` — Go bindings
+  for the Otherlode wire schema, generated remotely by the BSR and pulled in
+  as an ordinary Go module dependency. The package to import is
+  `buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1`.
+  No local `.proto` copy or `protoc` step in this repo.
 - `ingest.Handler` — decodes the three payload types above and
   hands each to a `Sink`. Rejects malformed bodies, and decoded ones
   whose resource lacks the service name, instance ID or run ID a backend
@@ -106,9 +108,9 @@ repo and is published to the Buf Schema Registry as
   flood is capped regardless of whether it carries a valid token.
 - `metrics` — a handful of counters served at `GET /metrics` in
   the Prometheus text format, with no client library dependency.
-- `cmd/yukon-collector` — a minimal HTTP server wiring the sink into the
-  handler and listening on `:4319` (the agent's default
-  `collectorEndpoint`), overridable via `YUKON_COLLECTOR_ADDR`.
+- `cmd/otherlode-collector` — a minimal HTTP server wiring the sink into
+  the handler and listening on `:4319` (the agent's default
+  `collectorEndpoint`), overridable via `OTHERLODE_COLLECTOR_ADDR`.
 
 ## Running it
 
@@ -117,18 +119,18 @@ The collector requires an auth token before it will start (see
 locally is:
 
 ```
-YUKON_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/otherlode-collector
 ```
 
-Listens on `:4319` by default; set `YUKON_COLLECTOR_ADDR` to change that.
-Point the yukon agent's `collectorEndpoint` at it, or send a payload by
-hand. This posts a `DeltaBatch` for service `demo`, instance `i1`, run
+Listens on `:4319` by default; set `OTHERLODE_COLLECTOR_ADDR` to change
+that. Point the Otherlode agent's `collectorEndpoint` at it, or send a
+payload by hand. This posts a `DeltaBatch` for service `demo`, instance `i1`, run
 `r1`, with no probe deltas (the same shape the agent sends as an idle
 heartbeat):
 
 ```
 printf '\x0a\x0e\x0a\x04demo\x1a\x02i1\x2a\x02r1' | curl -s -o /dev/null -w '%{http_code}\n' \
-  -X POST http://localhost:4319/v1/yukon/deltas \
+  -X POST http://localhost:4319/v1/otherlode/deltas \
   -H 'Content-Type: application/x-protobuf' --data-binary @-
 ```
 
@@ -139,19 +141,19 @@ and does nothing else with it.
 ### Logging
 
 Logs are JSON lines on stdout at `info` and above. Set
-`YUKON_COLLECTOR_LOG_LEVEL` to `debug`, `info`, `warn`, or `error` to
+`OTHERLODE_COLLECTOR_LOG_LEVEL` to `debug`, `info`, `warn`, or `error` to
 change that. Without forwarding configured every payload is logged at
 `info`, so `warn` is the quiet setting for a busy collector.
 
 ### Authentication
 
-Set `YUKON_COLLECTOR_AUTH_TOKEN` to require a matching
-`Authorization: Bearer <token>` header on `/v1/yukon/deltas`,
-`/v1/yukon/manifest`, and `/v1/yukon/static-baseline`. Point the agent's
-exporter at the same token so its requests carry the header.
+Set `OTHERLODE_COLLECTOR_AUTH_TOKEN` to require a matching
+`Authorization: Bearer <token>` header on `/v1/otherlode/deltas`,
+`/v1/otherlode/manifest`, and `/v1/otherlode/static-baseline`. Point the
+agent's exporter at the same token so its requests carry the header.
 
 ```
-YUKON_COLLECTOR_AUTH_TOKEN=s3cret go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_AUTH_TOKEN=s3cret go run ./cmd/otherlode-collector
 ```
 
 To rotate the token without refusing any agent, list more than one,
@@ -162,17 +164,17 @@ or a trailing comma) stops the collector at startup. A token in this
 variable cannot contain a comma.
 
 ```
-YUKON_COLLECTOR_AUTH_TOKEN=old-token,new-token go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_AUTH_TOKEN=old-token,new-token go run ./cmd/otherlode-collector
 ```
 
 A token set in an environment variable shows up in process listings and
 container inspection. To keep it out of them, put the tokens in a file,
-one per line, and name the file in `YUKON_COLLECTOR_AUTH_TOKEN_FILE`
+one per line, and name the file in `OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE`
 instead. Blank lines and lines starting with `#` are skipped, so a token
 in a file cannot start with `#`. Spaces around each line are trimmed.
 This is the form a mounted Kubernetes or Docker secret takes. Setting
-both `YUKON_COLLECTOR_AUTH_TOKEN` and
-`YUKON_COLLECTOR_AUTH_TOKEN_FILE` stops the collector at startup.
+both `OTHERLODE_COLLECTOR_AUTH_TOKEN` and
+`OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE` stops the collector at startup.
 
 ```
 # agents on the old key until the fleet has rolled
@@ -185,7 +187,7 @@ to or removed from it takes effect without a restart. Kubernetes updates
 a mounted secret in place and sends no signal, which is why this is a
 timed re-read. If a re-read fails, or finds no token, the collector
 keeps the tokens it last read, logs a warning, and counts it in
-`yukon_collector_token_reload_failures_total{file="auth"}`, so a
+`otherlode_collector_token_reload_failures_total{file="auth"}`, so a
 re-read that finds no token cannot lock every agent out. A re-read can
 still catch a file that is half written and apply what it finds until
 the next re-read.
@@ -208,28 +210,28 @@ How to change the file depends on how it reaches the collector:
 
 At startup there is no
 earlier value to fall back on: a file that cannot be read or holds no
-token stops the collector, even with `YUKON_COLLECTOR_INSECURE_NO_AUTH`
+token stops the collector, even with `OTHERLODE_COLLECTOR_INSECURE_NO_AUTH`
 set.
 
 `/healthz` never requires the token, so liveness/readiness probes keep
 working unauthenticated.
 
-The collector fails closed: if neither `YUKON_COLLECTOR_AUTH_TOKEN` nor
-`YUKON_COLLECTOR_AUTH_TOKEN_FILE` is set, it
+The collector fails closed: if neither `OTHERLODE_COLLECTOR_AUTH_TOKEN` nor
+`OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE` is set, it
 refuses to start rather than running unauthenticated. To run without
 auth anyway (local development only — never for anything reachable
 outside your machine), opt out explicitly:
 
 ```
-YUKON_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_INSECURE_NO_AUTH=1 go run ./cmd/otherlode-collector
 ```
 
 Or as a container. The same fail-closed rule applies, so the token (or
 the explicit opt-out) has to be passed in:
 
 ```
-docker build -t yukon-collector .
-docker run --rm -p 4319:4319 -e YUKON_COLLECTOR_AUTH_TOKEN=s3cret yukon-collector
+docker build -t otherlode-collector .
+docker run --rm -p 4319:4319 -e OTHERLODE_COLLECTOR_AUTH_TOKEN=s3cret otherlode-collector
 ```
 
 ### TLS
@@ -242,29 +244,30 @@ which the redaction processor only sees once they reach the collector.
 Point the agent's `endpoint` at the proxy's `https` URL, and make sure
 agents and anything else outside your control can reach the listener
 only through the proxy; that is also the condition for setting
-`YUKON_COLLECTOR_CLIENT_IP_HEADER` (see below). Probes and scrapers of
+`OTHERLODE_COLLECTOR_CLIENT_IP_HEADER` (see below). Probes and scrapers of
 `/healthz` and `/metrics` inside your network can still reach it
-directly. Likewise, use an `https` `YUKON_COLLECTOR_FORWARD_URL`
+directly. Likewise, use an `https` `OTHERLODE_COLLECTOR_FORWARD_URL`
 whenever the backend is reached across a network you do not control,
-since that hop carries `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN`.
+since that hop carries `OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN`.
 
 ### Rate limiting
 
-`/v1/yukon/deltas`, `/v1/yukon/manifest`, and `/v1/yukon/static-baseline`
-are throttled per client IP: 5 requests/second with a burst of 20 by
-default, sized around the agent's 30-60s flush interval. Override with
-`YUKON_COLLECTOR_RATE_LIMIT_RPS` and `YUKON_COLLECTOR_RATE_LIMIT_BURST`,
-or set the rate to `0` to disable it.
+`/v1/otherlode/deltas`, `/v1/otherlode/manifest`, and
+`/v1/otherlode/static-baseline` are throttled per client IP: 5
+requests/second with a burst of 20 by default, sized around the agent's
+30-60s flush interval. Override with `OTHERLODE_COLLECTOR_RATE_LIMIT_RPS`
+and `OTHERLODE_COLLECTOR_RATE_LIMIT_BURST`, or set the rate to `0` to
+disable it.
 
 ```
-YUKON_COLLECTOR_RATE_LIMIT_RPS=10 YUKON_COLLECTOR_RATE_LIMIT_BURST=50 go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_RATE_LIMIT_RPS=10 OTHERLODE_COLLECTOR_RATE_LIMIT_BURST=50 go run ./cmd/otherlode-collector
 ```
 
 A throttled request gets `429` with a `Retry-After` header.
 
 The limit is keyed on the connection's remote address. Behind a reverse
 proxy or load balancer every agent arrives from the proxy's address and
-they all share one bucket, so set `YUKON_COLLECTOR_CLIENT_IP_HEADER` to
+they all share one bucket, so set `OTHERLODE_COLLECTOR_CLIENT_IP_HEADER` to
 the header the proxy writes the real client address into
 (`X-Forwarded-For`, `X-Real-IP`, and so on). For a comma-separated list
 the last entry is used, since that is the one the nearest proxy wrote.
@@ -272,16 +275,17 @@ The header is trusted as given: only set this when the collector cannot
 be reached except through that proxy.
 
 ```
-YUKON_COLLECTOR_CLIENT_IP_HEADER=X-Forwarded-For go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_CLIENT_IP_HEADER=X-Forwarded-For go run ./cmd/otherlode-collector
 ```
 
 `/healthz` is never throttled, for the same liveness/readiness reason it's
 never gated on auth.
 
 `GET /healthz` returns `200` once the server is up, for liveness/readiness
-probes. The image has no shell or `curl`, so `yukon-collector healthcheck`
-probes it instead: one GET of `/healthz` on the address
-`YUKON_COLLECTOR_ADDR` names (loopback when the host is empty or a
+probes. The image has no shell or `curl`, so
+`otherlode-collector healthcheck` probes it instead: one GET of `/healthz`
+on the address
+`OTHERLODE_COLLECTOR_ADDR` names (loopback when the host is empty or a
 wildcard), exiting 0 or 1, and never through a proxy. The image's
 `HEALTHCHECK` runs it.
 
@@ -292,18 +296,18 @@ wildcard), exiting 0 or 1, and never through a proxy. The image's
 
 | Counter | Labels | Meaning |
 | --- | --- | --- |
-| `yukon_collector_ingest_accepted_total` | `payload` | Decoded, valid, handed to the sink |
-| `yukon_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before or by the sink: `content_type`, `too_large`, `read`, `malformed`, `invalid`, `sink` (the sink refused the payload; the response was `503`) |
-| `yukon_collector_auth_rejected_total` | | 401 responses |
-| `yukon_collector_token_reload_failures_total` | `file` | A token file re-read that failed or found no usable token, so the last good value stayed; `file` is `auth` (`YUKON_COLLECTOR_AUTH_TOKEN_FILE`) or `forward` (`YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE`) |
-| `yukon_collector_rate_limited_total` | | 429 responses |
-| `yukon_collector_forward_delivered_total` | `payload` | Backend accepted the payload |
-| `yukon_collector_forward_retries_total` | `payload` | Attempts made after a retryable failure |
-| `yukon_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
-| `yukon_collector_forward_refused_total` | `payload`, `reason` | Not taken and answered `503` so the sender sends it again: `queue_full`, `shutting_down` |
-| `yukon_collector_environment_mismatch_total` | `payload` | The agent's environment differed from the collector's configured one (see [Environment](#environment)); `payload` is `deltas`, `manifest`, or `static_baseline` |
-| `yukon_collector_namespace_mismatch_total` | `payload` | The agent's service namespace differed from the collector's configured one (see [Namespace](#namespace)); `payload` is `deltas`, `manifest`, or `static_baseline` |
-| `yukon_collector_redacted_literals_total` | `payload` | String literal parts replaced by the redaction processor (see [Redaction](#redaction)); `payload` is `manifest` or `static_baseline` |
+| `otherlode_collector_ingest_accepted_total` | `payload` | Decoded, valid, handed to the sink |
+| `otherlode_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before or by the sink: `content_type`, `too_large`, `read`, `malformed`, `invalid`, `sink` (the sink refused the payload; the response was `503`) |
+| `otherlode_collector_auth_rejected_total` | | 401 responses |
+| `otherlode_collector_token_reload_failures_total` | `file` | A token file re-read that failed or found no usable token, so the last good value stayed; `file` is `auth` (`OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE`) or `forward` (`OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE`) |
+| `otherlode_collector_rate_limited_total` | | 429 responses |
+| `otherlode_collector_forward_delivered_total` | `payload` | Backend accepted the payload |
+| `otherlode_collector_forward_retries_total` | `payload` | Attempts made after a retryable failure |
+| `otherlode_collector_forward_dropped_total` | `payload`, `reason` | Discarded without delivery: `marshal`, `permanent`, `retry_exhausted`, `shutdown_deadline`, `shutdown_attempt_failed` |
+| `otherlode_collector_forward_refused_total` | `payload`, `reason` | Not taken and answered `503` so the sender sends it again: `queue_full`, `shutting_down` |
+| `otherlode_collector_environment_mismatch_total` | `payload` | The agent's environment differed from the collector's configured one (see [Environment](#environment)); `payload` is `deltas`, `manifest`, or `static_baseline` |
+| `otherlode_collector_namespace_mismatch_total` | `payload` | The agent's service namespace differed from the collector's configured one (see [Namespace](#namespace)); `payload` is `deltas`, `manifest`, or `static_baseline` |
+| `otherlode_collector_redacted_literals_total` | `payload` | String literal parts replaced by the redaction processor (see [Redaction](#redaction)); `payload` is `manifest` or `static_baseline` |
 
 `payload` is `deltas`, `manifest`, or `static_baseline`. The dropped
 counter is the one to alert on: every increment is agent data that never
@@ -316,27 +320,27 @@ read, so a rotation has not taken effect.
 ### Forwarding
 
 By default the collector only logs what it receives. Set
-`YUKON_COLLECTOR_FORWARD_URL` to the base URL of a backend and every
+`OTHERLODE_COLLECTOR_FORWARD_URL` to the base URL of a backend and every
 decoded payload is relayed there instead, as a `POST` to the same
-`/v1/yukon/deltas`, `/v1/yukon/manifest`, and
-`/v1/yukon/static-baseline` paths with the same `application/x-protobuf`
-body. `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN`, if
-set, is sent as a bearer token on those requests. Spaces around its
+`/v1/otherlode/deltas`, `/v1/otherlode/manifest`, and
+`/v1/otherlode/static-baseline` paths with the same
+`application/x-protobuf` body. `OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN`,
+if set, is sent as a bearer token on those requests. Spaces around its
 value are trimmed, and a value of only spaces stops the collector at
-startup. It is a separate secret from `YUKON_COLLECTOR_AUTH_TOKEN`: the agent authenticates to the
-collector, the collector authenticates to the backend, and the two need
-not match.
+startup. It is a separate secret from `OTHERLODE_COLLECTOR_AUTH_TOKEN`:
+the agent authenticates to the collector, the collector authenticates to
+the backend, and the two need not match.
 
 ```
-YUKON_COLLECTOR_AUTH_TOKEN=s3cret \
-YUKON_COLLECTOR_FORWARD_URL=https://backend.example.com \
-YUKON_COLLECTOR_FORWARD_AUTH_TOKEN=backend-secret \
-go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_AUTH_TOKEN=s3cret \
+OTHERLODE_COLLECTOR_FORWARD_URL=https://backend.example.com \
+OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN=backend-secret \
+go run ./cmd/otherlode-collector
 ```
 
 To keep the key out of the environment, name a file that holds it in
-`YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE` instead. The file follows the
-same rules as `YUKON_COLLECTOR_AUTH_TOKEN_FILE`: blank lines and `#`
+`OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE` instead. The file follows the
+same rules as `OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE`: blank lines and `#`
 lines are skipped, and spaces are trimmed. It must hold exactly one key,
 since the collector sends one key and the backend is where several keys
 can overlap during a rotation. Setting both variables stops the
@@ -346,7 +350,7 @@ the file again every 30 seconds and sends the new key from the next
 request on, and the same advice on changing the file applies. A re-read
 that fails, or finds no key or more than one, keeps the last good key,
 logs a warning, and counts in
-`yukon_collector_token_reload_failures_total{file="forward"}`.
+`otherlode_collector_token_reload_failures_total{file="forward"}`.
 
 Forwarding is asynchronous. The agent gets its `202` as soon as the
 payload is decoded and queued; background workers deliver it, retrying
@@ -370,18 +374,18 @@ changing. Each can be overridden; durations use Go syntax (`30s`, `5m`).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `YUKON_COLLECTOR_FORWARD_SHARDS` | `8` | Independent queue/worker pairs; payloads are sharded by service namespace, service name and instance ID |
-| `YUKON_COLLECTOR_FORWARD_QUEUE_SIZE` | `64` | Queued payloads per shard before new ones are refused with `503` |
-| `YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT` | `10s` | Bound on one delivery attempt |
-| `YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL` | `5s` | First retry wait, grown 1.5x each attempt with jitter |
-| `YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL` | `30s` | Cap on the retry wait |
-| `YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME` | `5m` | Total time to keep retrying one payload before dropping it |
+| `OTHERLODE_COLLECTOR_FORWARD_SHARDS` | `8` | Independent queue/worker pairs; payloads are sharded by service namespace, service name and instance ID |
+| `OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE` | `64` | Queued payloads per shard before new ones are refused with `503` |
+| `OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT` | `10s` | Bound on one delivery attempt |
+| `OTHERLODE_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL` | `5s` | First retry wait, grown 1.5x each attempt with jitter |
+| `OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL` | `30s` | Cap on the retry wait |
+| `OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME` | `5m` | Total time to keep retrying one payload before dropping it |
 
-Trying this out locally needs no real backend: a second `yukon-collector`
-instance is a valid one, since `ForwardingSink` posts the same paths and
-body shape this collector itself accepts. Point one instance's
-`YUKON_COLLECTOR_FORWARD_URL` at another's address and its `LogSink` will
-print what the first instance relayed. `internal/forward`'s integration
+Trying this out locally needs no real backend: a second
+`otherlode-collector` instance is a valid one, since `ForwardingSink`
+posts the same paths and body shape this collector itself accepts. Point
+one instance's `OTHERLODE_COLLECTOR_FORWARD_URL` at another's address and
+its `LogSink` will print what the first instance relayed. `internal/forward`'s integration
 tests do the same thing without a second process, wiring `ForwardingSink`
 straight into a second `ingest.Handler` to confirm a payload decoded on
 one end survives the relay and decodes identically on the other.
@@ -396,15 +400,15 @@ environment each payload came from to keep the two apart. An operator
 usually runs one collector per environment, so the collector can label
 every payload that passes through it, with no change to any JVM's config.
 
-Set `YUKON_COLLECTOR_ENVIRONMENT` to the environment name to stamp onto
+Set `OTHERLODE_COLLECTOR_ENVIRONMENT` to the environment name to stamp onto
 every delta batch, manifest and static baseline the collector ingests:
 
 ```
-YUKON_COLLECTOR_ENVIRONMENT=prod go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_ENVIRONMENT=prod go run ./cmd/otherlode-collector
 ```
 
-`YUKON_COLLECTOR_ENVIRONMENT_ACTION` controls what happens when a payload
-already names an environment:
+`OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION` controls what happens when a
+payload already names an environment:
 
 | Action | Behaviour |
 | --- | --- |
@@ -412,13 +416,13 @@ already names an environment:
 | `upsert` | Always writes the collector's value, even over one the agent set; guarantees nothing passing through a prod collector is ever labelled anything else |
 
 When the agent's value differs from the collector's, that is a mismatch:
-`yukon_collector_environment_mismatch_total` goes up under either action,
-and a `debug` log line names the service, instance and run involved. A
+`otherlode_collector_environment_mismatch_total` goes up under either
+action, and a `debug` log line names the service, instance and run involved. A
 non-zero count means some JVM is configured for a different environment
 than the collector it reports to.
 
-Setting `YUKON_COLLECTOR_ENVIRONMENT_ACTION` without also setting
-`YUKON_COLLECTOR_ENVIRONMENT` is a misconfiguration and stops the
+Setting `OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION` without also setting
+`OTHERLODE_COLLECTOR_ENVIRONMENT` is a misconfiguration and stops the
 collector at startup.
 
 ### Namespace
@@ -431,17 +435,17 @@ collector often serves one team, and setting that team's namespace once
 on the collector is easier than setting it on every agent. See
 [ADR 0002](docs/adr/0002-a-namespace-processor-stamps-a-service-namespace.md).
 
-Set `YUKON_COLLECTOR_SERVICE_NAMESPACE` to the namespace to stamp onto
+Set `OTHERLODE_COLLECTOR_SERVICE_NAMESPACE` to the namespace to stamp onto
 every delta batch, manifest and static baseline the collector ingests:
 
 ```
-YUKON_COLLECTOR_SERVICE_NAMESPACE=payments go run ./cmd/yukon-collector
+OTHERLODE_COLLECTOR_SERVICE_NAMESPACE=payments go run ./cmd/otherlode-collector
 ```
 
 With no value set, the processor is off. One collector can then serve
 every namespace, and each agent's namespace passes through unchanged.
 
-`YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION` controls what happens when a
+`OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION` controls what happens when a
 payload already names a namespace:
 
 | Action | Behaviour |
@@ -452,12 +456,12 @@ payload already names a namespace:
 The collector compares the two values after it trims surrounding spaces.
 Case counts: `Payments` and `payments` are different namespaces. An agent
 value made only of spaces counts as none. When the agent's value differs
-from the collector's, `yukon_collector_namespace_mismatch_total` goes up
+from the collector's, `otherlode_collector_namespace_mismatch_total` goes up
 under either action, and a `debug` log line names the service, instance
 and run involved.
 
-Setting `YUKON_COLLECTOR_SERVICE_NAMESPACE_ACTION` without also setting
-`YUKON_COLLECTOR_SERVICE_NAMESPACE` is a misconfiguration and stops the
+Setting `OTHERLODE_COLLECTOR_SERVICE_NAMESPACE_ACTION` without also setting
+`OTHERLODE_COLLECTOR_SERVICE_NAMESPACE` is a misconfiguration and stops the
 collector at startup.
 
 ### Redaction
@@ -482,21 +486,21 @@ Two settings turn it on. Both are off by default.
 
 | Variable | Meaning |
 | --- | --- |
-| `YUKON_COLLECTOR_REDACT_BLOCKED_VALUES` | Regular expressions in Go syntax, one per line, since a comma can appear inside a pattern. A literal that any of them matches anywhere in its text is redacted. Anchor a pattern with `^` and `$` to match the whole literal. Blank lines are ignored. |
-| `YUKON_COLLECTOR_REDACT_ALL_LITERALS` | `1` or `true` redacts every string literal. |
+| `OTHERLODE_COLLECTOR_REDACT_BLOCKED_VALUES` | Regular expressions in Go syntax, one per line, since a comma can appear inside a pattern. A literal that any of them matches anywhere in its text is redacted. Anchor a pattern with `^` and `$` to match the whole literal. Blank lines are ignored. |
+| `OTHERLODE_COLLECTOR_REDACT_ALL_LITERALS` | `1` or `true` redacts every string literal. |
 
 ```
-YUKON_COLLECTOR_REDACT_BLOCKED_VALUES='(?i)password|secret|token
+OTHERLODE_COLLECTOR_REDACT_BLOCKED_VALUES='(?i)password|secret|token
 ^sk_live_' \
-go run ./cmd/yukon-collector
+go run ./cmd/otherlode-collector
 ```
 
 A pattern that does not compile stops the collector at startup with the
 variable and the pattern's line named. So does a value for
-`YUKON_COLLECTOR_REDACT_ALL_LITERALS` that does not parse as a boolean.
-`yukon_collector_redacted_literals_total` counts the parts replaced, and a
-`debug` log line names the service, instance, run and count for each
-payload that had any. Neither ever includes a literal's text.
+`OTHERLODE_COLLECTOR_REDACT_ALL_LITERALS` that does not parse as a boolean.
+`otherlode_collector_redacted_literals_total` counts the parts replaced,
+and a `debug` log line names the service, instance, run and count for
+each payload that had any. Neither ever includes a literal's text.
 
 While either setting is on, the collector also drops every field it does
 not know from every payload, delta batches included. Go keeps unknown
@@ -517,11 +521,11 @@ go test ./...
 ```
 
 The wire schema is owned by the agent repo and published to the
-[Buf Schema Registry](https://buf.build/lukedevops-oss/yukon). To pick up a
+[Buf Schema Registry](https://buf.build/otherlode/otherlode). To pick up a
 schema change, bump the Go bindings:
 
 ```
-go get buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go@latest
+go get buf.build/gen/go/otherlode/otherlode/protocolbuffers/go@latest
 ```
 
 ## License

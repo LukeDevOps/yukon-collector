@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"regexp"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/LukeDevOps/yukon-collector/ingest"
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/ingest"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // RedactedText is the text a redacted literal part carries.
@@ -63,14 +63,14 @@ func NewRedaction(next ingest.Sink, cfg RedactionConfig, logger *slog.Logger) *R
 
 // AcceptDeltaBatch drops the batch's unknown fields, then passes the
 // batch to next. A delta batch holds no condition parts.
-func (r *Redaction) AcceptDeltaBatch(ctx context.Context, batch *yukonpb.DeltaBatch) error {
+func (r *Redaction) AcceptDeltaBatch(ctx context.Context, batch *otherlodepb.DeltaBatch) error {
 	dropUnknown(batch.ProtoReflect())
 	return r.next.AcceptDeltaBatch(ctx, batch)
 }
 
 // AcceptManifest redacts the literals in the branch sites of every probe,
 // drops unknown fields, then passes the manifest to next.
-func (r *Redaction) AcceptManifest(ctx context.Context, manifest *yukonpb.ProbeManifest) error {
+func (r *Redaction) AcceptManifest(ctx context.Context, manifest *otherlodepb.ProbeManifest) error {
 	n := 0
 	for _, probe := range manifest.GetProbes() {
 		n += r.redactSites(probe.GetBranchSites())
@@ -82,7 +82,7 @@ func (r *Redaction) AcceptManifest(ctx context.Context, manifest *yukonpb.ProbeM
 
 // AcceptStaticBaseline redacts the literals in the branch sites of every
 // declared method, drops unknown fields, then passes the baseline to next.
-func (r *Redaction) AcceptStaticBaseline(ctx context.Context, baseline *yukonpb.StaticBaseline) error {
+func (r *Redaction) AcceptStaticBaseline(ctx context.Context, baseline *otherlodepb.StaticBaseline) error {
 	n := 0
 	for _, class := range baseline.GetDeclaredClasses() {
 		for _, method := range class.GetMethods() {
@@ -96,7 +96,7 @@ func (r *Redaction) AcceptStaticBaseline(ctx context.Context, baseline *yukonpb.
 
 // redactSites redacts each site's condition and each of its outcomes'
 // case labels. It returns the number of parts it replaced.
-func (r *Redaction) redactSites(sites []*yukonpb.BranchSite) int {
+func (r *Redaction) redactSites(sites []*otherlodepb.BranchSite) int {
 	n := 0
 	for _, site := range sites {
 		n += r.redactParts(site.GetCondition())
@@ -109,10 +109,10 @@ func (r *Redaction) redactSites(sites []*yukonpb.BranchSite) int {
 
 // redactParts replaces the text of each literal part that the config
 // blocks. It returns the number of parts it replaced.
-func (r *Redaction) redactParts(parts []*yukonpb.ConditionPart) int {
+func (r *Redaction) redactParts(parts []*otherlodepb.ConditionPart) int {
 	n := 0
 	for _, p := range parts {
-		if p.GetKind() != yukonpb.ConditionPartKind_STRING_LITERAL {
+		if p.GetKind() != otherlodepb.ConditionPartKind_STRING_LITERAL {
 			continue
 		}
 		if r.blocks(p.GetText()) {
@@ -138,7 +138,7 @@ func (r *Redaction) blocks(text string) bool {
 
 // record counts n replaced parts and logs them once for the payload. It
 // never logs a literal's text.
-func (r *Redaction) record(res *yukonpb.ResourceAttributes, payload string, n int) {
+func (r *Redaction) record(res *otherlodepb.ResourceAttributes, payload string, n int) {
 	if n == 0 {
 		return
 	}

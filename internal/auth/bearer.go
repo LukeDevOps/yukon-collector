@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 const bearerPrefix = "Bearer "
@@ -70,7 +70,7 @@ func RequireBearerToken(tokens *TokenSet, next http.Handler) http.Handler {
 		presented, ok := bearerToken(r.Header.Get("Authorization"))
 		if !ok || !tokens.Matches(presented) {
 			metrics.AuthRejected.Inc()
-			w.Header().Set("WWW-Authenticate", `Bearer realm="yukon-collector"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="otherlode-collector"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

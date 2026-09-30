@@ -16,14 +16,14 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/internal/auth"
-	"github.com/LukeDevOps/yukon-collector/internal/forward"
-	"github.com/LukeDevOps/yukon-collector/internal/processor"
-	"github.com/LukeDevOps/yukon-collector/internal/ratelimit"
-	"github.com/LukeDevOps/yukon-collector/internal/tokenfile"
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/internal/auth"
+	"github.com/otherlodehq/otherlode-collector/internal/forward"
+	"github.com/otherlodehq/otherlode-collector/internal/processor"
+	"github.com/otherlodehq/otherlode-collector/internal/ratelimit"
+	"github.com/otherlodehq/otherlode-collector/internal/tokenfile"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // deltaRequest builds a POST to the deltas route carrying the smallest
@@ -31,13 +31,13 @@ import (
 // ID, and no deltas.
 func deltaRequest(t *testing.T, serverURL string) *http.Request {
 	t.Helper()
-	body, err := proto.Marshal(&yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	body, err := proto.Marshal(&otherlodepb.DeltaBatch{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	})
 	if err != nil {
 		t.Fatalf("marshal batch: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/yukon/deltas", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/otherlode/deltas", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -50,15 +50,15 @@ func deltaRequest(t *testing.T, serverURL string) *http.Request {
 // scanned_at, and a single chunk.
 func staticBaselineRequest(t *testing.T, serverURL string) *http.Request {
 	t.Helper()
-	body, err := proto.Marshal(&yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	body, err := proto.Marshal(&otherlodepb.StaticBaseline{
+		Resource:   &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkCount: 1,
 	})
 	if err != nil {
 		t.Fatalf("marshal baseline: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/yukon/static-baseline", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/otherlode/static-baseline", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestRegisterRoutes_NoForwardURL_ReturnsNilForwardingSink(t *testing.T) {
 	mux := http.NewServeMux()
 	fwd := mustRegisterRoutes(t, mux, "", nil, "", "")
 	if fwd != nil {
-		t.Fatalf("forwarding sink = %v, want nil when YUKON_COLLECTOR_FORWARD_URL is unset", fwd)
+		t.Fatalf("forwarding sink = %v, want nil when OTHERLODE_COLLECTOR_FORWARD_URL is unset", fwd)
 	}
 }
 
@@ -257,7 +257,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 	mux := http.NewServeMux()
 	fwd := mustRegisterRoutes(t, mux, "", nil, backend.URL, "backend-secret")
 	if fwd == nil {
-		t.Fatal("forwarding sink = nil, want non-nil when YUKON_COLLECTOR_FORWARD_URL is set")
+		t.Fatal("forwarding sink = nil, want non-nil when OTHERLODE_COLLECTOR_FORWARD_URL is set")
 	}
 	defer fwd.Shutdown(context.Background())
 
@@ -299,16 +299,16 @@ func TestRegisterRoutes_Metrics_CountsAcceptedIngest(t *testing.T) {
 	if metricsResp.StatusCode != http.StatusOK {
 		t.Fatalf("metrics status = %d, want %d", metricsResp.StatusCode, http.StatusOK)
 	}
-	if !strings.Contains(string(body), `yukon_collector_ingest_accepted_total{payload="deltas"} `) {
+	if !strings.Contains(string(body), `otherlode_collector_ingest_accepted_total{payload="deltas"} `) {
 		t.Fatalf("metrics output missing the accepted-deltas series:\n%s", body)
 	}
 }
 
 // forwardDelta posts a delta batch carrying res to a collector wired
 // with envCfg and nsCfg, and returns the batch its backend received.
-func forwardDelta(t *testing.T, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, res *yukonpb.ResourceAttributes) *yukonpb.DeltaBatch {
+func forwardDelta(t *testing.T, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, res *otherlodepb.ResourceAttributes) *otherlodepb.DeltaBatch {
 	t.Helper()
-	received := make(chan *yukonpb.DeltaBatch, 1)
+	received := make(chan *otherlodepb.DeltaBatch, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -316,7 +316,7 @@ func forwardDelta(t *testing.T, envCfg processor.EnvironmentConfig, nsCfg proces
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		var batch yukonpb.DeltaBatch
+		var batch otherlodepb.DeltaBatch
 		if err := proto.Unmarshal(body, &batch); err != nil {
 			t.Errorf("unmarshal forwarded body: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -334,11 +334,11 @@ func forwardDelta(t *testing.T, envCfg processor.EnvironmentConfig, nsCfg proces
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	body, err := proto.Marshal(&yukonpb.DeltaBatch{Resource: res})
+	body, err := proto.Marshal(&otherlodepb.DeltaBatch{Resource: res})
 	if err != nil {
 		t.Fatalf("marshal batch: %v", err)
 	}
-	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf", bytes.NewReader(body))
+	resp, err := http.Post(server.URL+"/v1/otherlode/deltas", "application/x-protobuf", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -358,8 +358,8 @@ func forwardDelta(t *testing.T, envCfg processor.EnvironmentConfig, nsCfg proces
 
 // demoResource is the smallest resource the handler accepts. It names a
 // namespace only when ns is non-empty.
-func demoResource(ns string) *yukonpb.ResourceAttributes {
-	res := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
+func demoResource(ns string) *otherlodepb.ResourceAttributes {
+	res := &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
 	if ns != "" {
 		res.SetServiceNamespace(ns)
 	}
@@ -414,17 +414,17 @@ func TestRegisterRoutes_BothProcessorsSet_StampBothFields(t *testing.T) {
 // one probe whose branch site tests a string literal. Its top-level
 // message and its branch site each carry a field no schema version
 // declares.
-func manifestWithLiteral() *yukonpb.ProbeManifest {
+func manifestWithLiteral() *otherlodepb.ProbeManifest {
 	unknown := protowire.AppendString(protowire.AppendTag(nil, 9999, protowire.BytesType), "a newer literal")
-	site := &yukonpb.BranchSite{Condition: []*yukonpb.ConditionPart{
-		{Kind: yukonpb.ConditionPartKind_CODE, Text: "System.getenv("},
-		{Kind: yukonpb.ConditionPartKind_STRING_LITERAL, Text: "ENABLE_LEGACY_DISCOUNT"},
-		{Kind: yukonpb.ConditionPartKind_CODE, Text: ")"},
+	site := &otherlodepb.BranchSite{Condition: []*otherlodepb.ConditionPart{
+		{Kind: otherlodepb.ConditionPartKind_CODE, Text: "System.getenv("},
+		{Kind: otherlodepb.ConditionPartKind_STRING_LITERAL, Text: "ENABLE_LEGACY_DISCOUNT"},
+		{Kind: otherlodepb.ConditionPartKind_CODE, Text: ")"},
 	}}
 	site.ProtoReflect().SetUnknown(unknown)
-	manifest := &yukonpb.ProbeManifest{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
-		Probes:   []*yukonpb.ProbeLocation{{ClassName: "com.example.Pricing", MethodName: "price", BranchSites: []*yukonpb.BranchSite{site}}},
+	manifest := &otherlodepb.ProbeManifest{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+		Probes:   []*otherlodepb.ProbeLocation{{ClassName: "com.example.Pricing", MethodName: "price", BranchSites: []*otherlodepb.BranchSite{site}}},
 	}
 	manifest.ProtoReflect().SetUnknown(unknown)
 	return manifest
@@ -432,9 +432,9 @@ func manifestWithLiteral() *yukonpb.ProbeManifest {
 
 // forwardManifest posts manifestWithLiteral to a collector wired with
 // redactCfg and returns the manifest its backend received.
-func forwardManifest(t *testing.T, redactCfg processor.RedactionConfig) *yukonpb.ProbeManifest {
+func forwardManifest(t *testing.T, redactCfg processor.RedactionConfig) *otherlodepb.ProbeManifest {
 	t.Helper()
-	received := make(chan *yukonpb.ProbeManifest, 1)
+	received := make(chan *otherlodepb.ProbeManifest, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -442,7 +442,7 @@ func forwardManifest(t *testing.T, redactCfg processor.RedactionConfig) *yukonpb
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		var manifest yukonpb.ProbeManifest
+		var manifest otherlodepb.ProbeManifest
 		if err := proto.Unmarshal(body, &manifest); err != nil {
 			t.Errorf("unmarshal forwarded body: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -464,7 +464,7 @@ func forwardManifest(t *testing.T, redactCfg processor.RedactionConfig) *yukonpb
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
 	}
-	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/x-protobuf", bytes.NewReader(body))
+	resp, err := http.Post(server.URL+"/v1/otherlode/manifest", "application/x-protobuf", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -564,7 +564,7 @@ func deltaStatus(t *testing.T, serverURL, token string) int {
 }
 
 func TestRegisterRoutes_TokenList_AnyListedTokenPasses(t *testing.T) {
-	tokens, _, err := resolveAuthTokens(envFrom(map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "old-token, new-token"}))
+	tokens, _, err := resolveAuthTokens(envFrom(map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN": "old-token, new-token"}))
 	if err != nil {
 		t.Fatalf("resolveAuthTokens: %v", err)
 	}
@@ -589,7 +589,7 @@ func TestRegisterRoutes_TokenList_AnyListedTokenPasses(t *testing.T) {
 
 func TestRegisterRoutes_AuthTokenFile_ReReadChangesAcceptedTokens(t *testing.T) {
 	path := writeTokenFile(t, "old-token\n")
-	tokens, file, err := resolveAuthTokens(envFrom(map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": path}))
+	tokens, file, err := resolveAuthTokens(envFrom(map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE": path}))
 	if err != nil {
 		t.Fatalf("resolveAuthTokens: %v", err)
 	}
@@ -633,8 +633,8 @@ func TestRegisterRoutes_ForwardTokenFile_NextRequestSendsReloadedKey(t *testing.
 
 	path := writeTokenFile(t, "key-1\n")
 	cfg, file, err := resolveForwardConfig(envFrom(map[string]string{
-		"YUKON_COLLECTOR_FORWARD_URL":             backend.URL,
-		"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": path,
+		"OTHERLODE_COLLECTOR_FORWARD_URL":             backend.URL,
+		"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": path,
 	}))
 	if err != nil {
 		t.Fatalf("resolveForwardConfig: %v", err)

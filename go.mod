@@ -1,4 +1,4 @@
-module github.com/LukeDevOps/yukon-collector
+module github.com/otherlodehq/otherlode-collector
 
 go 1.26.0
 
@@ -6,6 +6,6 @@ toolchain go1.26.6
 
 require google.golang.org/protobuf v1.36.12
 
-require buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go v1.36.12-20260926204238-4f98cf02d54b.2
+require buf.build/gen/go/otherlode/otherlode/protocolbuffers/go v1.36.12-20260930215558-2f411e058b6c.2
 
 require golang.org/x/time v0.16.0

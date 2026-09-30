@@ -87,7 +87,7 @@ func TestHandler_ServesTextFormat(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
 		t.Fatalf("content-type = %q, want text/plain", ct)
 	}
-	if !strings.Contains(rec.Body.String(), "# TYPE yukon_collector_ingest_accepted_total counter") {
+	if !strings.Contains(rec.Body.String(), "# TYPE otherlode_collector_ingest_accepted_total counter") {
 		t.Fatalf("body missing the collector's own counters:\n%s", rec.Body.String())
 	}
 }

@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"strings"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/ingest"
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/ingest"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // NamespaceConfig configures a Namespace processor. Value is the service
@@ -52,21 +52,21 @@ func NewNamespace(next ingest.Sink, cfg NamespaceConfig, logger *slog.Logger) *N
 
 // AcceptDeltaBatch stamps the batch's resource with the configured
 // namespace, then passes the batch to next.
-func (n *Namespace) AcceptDeltaBatch(ctx context.Context, batch *yukonpb.DeltaBatch) error {
+func (n *Namespace) AcceptDeltaBatch(ctx context.Context, batch *otherlodepb.DeltaBatch) error {
 	n.stamp(batch.GetResource(), "deltas")
 	return n.next.AcceptDeltaBatch(ctx, batch)
 }
 
 // AcceptManifest stamps the manifest's resource with the configured
 // namespace, then passes the manifest to next.
-func (n *Namespace) AcceptManifest(ctx context.Context, manifest *yukonpb.ProbeManifest) error {
+func (n *Namespace) AcceptManifest(ctx context.Context, manifest *otherlodepb.ProbeManifest) error {
 	n.stamp(manifest.GetResource(), "manifest")
 	return n.next.AcceptManifest(ctx, manifest)
 }
 
 // AcceptStaticBaseline stamps the baseline's resource with the
 // configured namespace, then passes the baseline to next.
-func (n *Namespace) AcceptStaticBaseline(ctx context.Context, baseline *yukonpb.StaticBaseline) error {
+func (n *Namespace) AcceptStaticBaseline(ctx context.Context, baseline *otherlodepb.StaticBaseline) error {
 	n.stamp(baseline.GetResource(), "static_baseline")
 	return n.next.AcceptStaticBaseline(ctx, baseline)
 }
@@ -77,7 +77,7 @@ func (n *Namespace) AcceptStaticBaseline(ctx context.Context, baseline *yukonpb.
 // overwrites the agent's value only under Upsert. A nil res is left
 // alone: ingest.Handler rejects such a payload before any sink sees it,
 // but a Namespace used without the handler must not panic on one.
-func (n *Namespace) stamp(res *yukonpb.ResourceAttributes, payload string) {
+func (n *Namespace) stamp(res *otherlodepb.ResourceAttributes, payload string) {
 	if res == nil {
 		return
 	}

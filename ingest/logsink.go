@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 )
 
 // LogSink logs every payload instead of storing it. It is a placeholder
@@ -25,7 +25,7 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 // AcceptDeltaBatch logs the batch's service identity, run ID,
 // environment, delta count, endpoint delta count, and dependency delta
 // count. It never fails.
-func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
+func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"namespace", batch.GetResource().GetServiceNamespace(),
 		"service", batch.GetResource().GetServiceName(),
@@ -44,7 +44,7 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch)
 // count, disabled endpoint module count, dependency and reference
 // counts, whether the instance records references, and whether its
 // dependency listing is delivered. It never fails.
-func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
+func (s *LogSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"namespace", manifest.GetResource().GetServiceNamespace(),
 		"service", manifest.GetResource().GetServiceName(),
@@ -70,7 +70,7 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManif
 // AcceptStaticBaseline logs the baseline's service identity, run ID,
 // environment, scan identity, chunk position, and class counts. It never
 // fails.
-func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
+func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.StaticBaseline) error {
 	s.logger.Info("received static baseline",
 		"namespace", baseline.GetResource().GetServiceNamespace(),
 		"service", baseline.GetResource().GetServiceName(),
@@ -91,7 +91,7 @@ func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.Stat
 }
 
 // callEdgeCount sums the call edges carried by probes.
-func callEdgeCount(probes []*yukonpb.ProbeLocation) int {
+func callEdgeCount(probes []*otherlodepb.ProbeLocation) int {
 	n := 0
 	for _, p := range probes {
 		n += len(p.GetCalls())
@@ -101,7 +101,7 @@ func callEdgeCount(probes []*yukonpb.ProbeLocation) int {
 
 // declaredCallEdgeCount sums the call edges carried by every method of
 // every declared class.
-func declaredCallEdgeCount(classes []*yukonpb.DeclaredClass) int {
+func declaredCallEdgeCount(classes []*otherlodepb.DeclaredClass) int {
 	n := 0
 	for _, c := range classes {
 		for _, m := range c.GetMethods() {
@@ -112,7 +112,7 @@ func declaredCallEdgeCount(classes []*yukonpb.DeclaredClass) int {
 }
 
 // referencedClassCount sums the referenced class names carried by probes.
-func referencedClassCount(probes []*yukonpb.ProbeLocation) int {
+func referencedClassCount(probes []*otherlodepb.ProbeLocation) int {
 	n := 0
 	for _, p := range probes {
 		n += len(p.GetReferencedClasses())
@@ -122,7 +122,7 @@ func referencedClassCount(probes []*yukonpb.ProbeLocation) int {
 
 // declaredReferencedClassCount sums the referenced class names carried by
 // every declared class and every method of it.
-func declaredReferencedClassCount(classes []*yukonpb.DeclaredClass) int {
+func declaredReferencedClassCount(classes []*otherlodepb.DeclaredClass) int {
 	n := 0
 	for _, c := range classes {
 		n += len(c.GetReferencedClasses())

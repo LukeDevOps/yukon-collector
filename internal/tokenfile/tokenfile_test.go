@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // writeFile replaces path's content through a rename, so a reader sees
@@ -169,7 +169,7 @@ func TestWatch_ShowsZeroFailureSeries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	want := `yukon_collector_token_reload_failures_total{file="` + label + `"} 0`
+	want := `otherlode_collector_token_reload_failures_total{file="` + label + `"} 0`
 	if strings.Contains(metrics.Render(), want) {
 		t.Fatalf("metrics show %q before Watch starts", want)
 	}

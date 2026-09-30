@@ -6,59 +6,59 @@ import (
 	"regexp"
 	"testing"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 	"google.golang.org/protobuf/encoding/protowire"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
-func part(kind yukonpb.ConditionPartKind, text string) *yukonpb.ConditionPart {
-	return &yukonpb.ConditionPart{Kind: kind, Text: text}
+func part(kind otherlodepb.ConditionPartKind, text string) *otherlodepb.ConditionPart {
+	return &otherlodepb.ConditionPart{Kind: kind, Text: text}
 }
 
-func code(text string) *yukonpb.ConditionPart {
-	return part(yukonpb.ConditionPartKind_CODE, text)
+func code(text string) *otherlodepb.ConditionPart {
+	return part(otherlodepb.ConditionPartKind_CODE, text)
 }
 
-func literal(text string) *yukonpb.ConditionPart {
-	return part(yukonpb.ConditionPartKind_STRING_LITERAL, text)
+func literal(text string) *otherlodepb.ConditionPart {
+	return part(otherlodepb.ConditionPartKind_STRING_LITERAL, text)
 }
 
-func placeholder(text string) *yukonpb.ConditionPart {
-	return part(yukonpb.ConditionPartKind_PLACEHOLDER, text)
+func placeholder(text string) *otherlodepb.ConditionPart {
+	return part(otherlodepb.ConditionPartKind_PLACEHOLDER, text)
 }
 
 // site builds a branch site with the given condition and one CASE
 // outcome carrying caseLabel.
-func site(condition []*yukonpb.ConditionPart, caseLabel []*yukonpb.ConditionPart) *yukonpb.BranchSite {
-	return &yukonpb.BranchSite{
+func site(condition []*otherlodepb.ConditionPart, caseLabel []*otherlodepb.ConditionPart) *otherlodepb.BranchSite {
+	return &otherlodepb.BranchSite{
 		Condition: condition,
-		Outcomes: []*yukonpb.BranchOutcome{
-			{Role: yukonpb.BranchRole_CASE, CaseLabel: caseLabel},
-			{Role: yukonpb.BranchRole_DEFAULT},
+		Outcomes: []*otherlodepb.BranchOutcome{
+			{Role: otherlodepb.BranchRole_CASE, CaseLabel: caseLabel},
+			{Role: otherlodepb.BranchRole_DEFAULT},
 		},
 	}
 }
 
-func resourceFor(run string) *yukonpb.ResourceAttributes {
-	return &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: run}
+func resourceFor(run string) *otherlodepb.ResourceAttributes {
+	return &otherlodepb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: run}
 }
 
-func manifestWith(sites ...*yukonpb.BranchSite) *yukonpb.ProbeManifest {
-	return &yukonpb.ProbeManifest{
+func manifestWith(sites ...*otherlodepb.BranchSite) *otherlodepb.ProbeManifest {
+	return &otherlodepb.ProbeManifest{
 		Resource: resourceFor("run-1"),
-		Probes:   []*yukonpb.ProbeLocation{{ClassName: "com.example.Pricing", MethodName: "price", BranchSites: sites}},
+		Probes:   []*otherlodepb.ProbeLocation{{ClassName: "com.example.Pricing", MethodName: "price", BranchSites: sites}},
 	}
 }
 
-func baselineWith(sites ...*yukonpb.BranchSite) *yukonpb.StaticBaseline {
-	return &yukonpb.StaticBaseline{
+func baselineWith(sites ...*otherlodepb.BranchSite) *otherlodepb.StaticBaseline {
+	return &otherlodepb.StaticBaseline{
 		Resource:   resourceFor("run-1"),
 		ScannedAt:  1700000000,
 		ChunkCount: 1,
-		DeclaredClasses: []*yukonpb.DeclaredClass{{
+		DeclaredClasses: []*otherlodepb.DeclaredClass{{
 			ClassName: "com.example.Pricing",
-			Methods:   []*yukonpb.DeclaredMethod{{MethodName: "price", BranchSites: sites}},
+			Methods:   []*otherlodepb.DeclaredMethod{{MethodName: "price", BranchSites: sites}},
 		}},
 	}
 }
@@ -72,7 +72,7 @@ func blocked(t *testing.T, patterns ...string) RedactionConfig {
 	return cfg
 }
 
-func texts(parts []*yukonpb.ConditionPart) []string {
+func texts(parts []*otherlodepb.ConditionPart) []string {
 	out := make([]string, len(parts))
 	for i, p := range parts {
 		out[i] = p.GetText()
@@ -80,7 +80,7 @@ func texts(parts []*yukonpb.ConditionPart) []string {
 	return out
 }
 
-func assertTexts(t *testing.T, what string, parts []*yukonpb.ConditionPart, want ...string) {
+func assertTexts(t *testing.T, what string, parts []*otherlodepb.ConditionPart, want ...string) {
 	t.Helper()
 	got := texts(parts)
 	if len(got) != len(want) {
@@ -98,7 +98,7 @@ func TestRedaction_BlockedPatternMatchesLiteral_Replaced(t *testing.T) {
 	r := NewRedaction(next, blocked(t, "LEGACY"), nil)
 
 	manifest := manifestWith(site(
-		[]*yukonpb.ConditionPart{code("System.getenv("), literal("ENABLE_LEGACY_DISCOUNT"), code(") == "), literal("true")},
+		[]*otherlodepb.ConditionPart{code("System.getenv("), literal("ENABLE_LEGACY_DISCOUNT"), code(") == "), literal("true")},
 		nil,
 	))
 	if err := r.AcceptManifest(context.Background(), manifest); err != nil {
@@ -107,7 +107,7 @@ func TestRedaction_BlockedPatternMatchesLiteral_Replaced(t *testing.T) {
 
 	got := next.manifests[0].GetProbes()[0].GetBranchSites()[0].GetCondition()
 	assertTexts(t, "condition", got, "System.getenv(", "…", ") == ", "true")
-	if kind := got[1].GetKind(); kind != yukonpb.ConditionPartKind_STRING_LITERAL {
+	if kind := got[1].GetKind(); kind != otherlodepb.ConditionPartKind_STRING_LITERAL {
 		t.Fatalf("redacted part kind = %v, want STRING_LITERAL", kind)
 	}
 }
@@ -117,8 +117,8 @@ func TestRedaction_NoPatternMatchesLiteral_Kept(t *testing.T) {
 	r := NewRedaction(next, blocked(t, "^secret$", "password"), nil)
 
 	manifest := manifestWith(site(
-		[]*yukonpb.ConditionPart{code("mode == "), literal("fast")},
-		[]*yukonpb.ConditionPart{literal("slow")},
+		[]*otherlodepb.ConditionPart{code("mode == "), literal("fast")},
+		[]*otherlodepb.ConditionPart{literal("slow")},
 	))
 	if err := r.AcceptManifest(context.Background(), manifest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -134,8 +134,8 @@ func TestRedaction_CodeAndPlaceholderParts_NeverTouched(t *testing.T) {
 	r := NewRedaction(next, blocked(t, "token"), nil)
 
 	manifest := manifestWith(site(
-		[]*yukonpb.ConditionPart{code("token.isEmpty() && "), placeholder("token"), code(" == "), literal("token-1")},
-		[]*yukonpb.ConditionPart{code("Token.NONE")},
+		[]*otherlodepb.ConditionPart{code("token.isEmpty() && "), placeholder("token"), code(" == "), literal("token-1")},
+		[]*otherlodepb.ConditionPart{code("Token.NONE")},
 	))
 	if err := r.AcceptManifest(context.Background(), manifest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -150,7 +150,7 @@ func TestRedaction_BlockedPatternMatchesUnanchored(t *testing.T) {
 	next := &recordingSink{}
 	r := NewRedaction(next, blocked(t, "[0-9]{4}"), nil)
 
-	baseline := baselineWith(site([]*yukonpb.ConditionPart{literal("card 4111 1111")}, nil))
+	baseline := baselineWith(site([]*otherlodepb.ConditionPart{literal("card 4111 1111")}, nil))
 	if err := r.AcceptStaticBaseline(context.Background(), baseline); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,8 +164,8 @@ func TestRedaction_AllLiterals_ManifestConditionsAndCaseLabelsReplaced(t *testin
 	r := NewRedaction(next, RedactionConfig{AllLiterals: true}, nil)
 
 	manifest := manifestWith(
-		site([]*yukonpb.ConditionPart{code("name == "), literal("alice")}, []*yukonpb.ConditionPart{literal("bob")}),
-		site([]*yukonpb.ConditionPart{code("x > 0")}, []*yukonpb.ConditionPart{code("Color.RED")}),
+		site([]*otherlodepb.ConditionPart{code("name == "), literal("alice")}, []*otherlodepb.ConditionPart{literal("bob")}),
+		site([]*otherlodepb.ConditionPart{code("x > 0")}, []*otherlodepb.ConditionPart{code("Color.RED")}),
 	)
 	if err := r.AcceptManifest(context.Background(), manifest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -183,8 +183,8 @@ func TestRedaction_AllLiterals_StaticBaselineConditionsAndCaseLabelsReplaced(t *
 	r := NewRedaction(next, RedactionConfig{AllLiterals: true}, nil)
 
 	baseline := baselineWith(site(
-		[]*yukonpb.ConditionPart{code("System.getenv("), literal("MODE"), code(")")},
-		[]*yukonpb.ConditionPart{literal("legacy")},
+		[]*otherlodepb.ConditionPart{code("System.getenv("), literal("MODE"), code(")")},
+		[]*otherlodepb.ConditionPart{literal("legacy")},
 	))
 	if err := r.AcceptStaticBaseline(context.Background(), baseline); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -203,13 +203,13 @@ func TestRedaction_Counter_CountsReplacedPartsPerPayload(t *testing.T) {
 	r := NewRedaction(next, blocked(t, "secret"), nil)
 
 	manifest := manifestWith(site(
-		[]*yukonpb.ConditionPart{literal("secret-a"), code(" + "), literal("secret-b"), literal("public")},
-		[]*yukonpb.ConditionPart{literal("top-secret")},
+		[]*otherlodepb.ConditionPart{literal("secret-a"), code(" + "), literal("secret-b"), literal("public")},
+		[]*otherlodepb.ConditionPart{literal("top-secret")},
 	))
 	if err := r.AcceptManifest(context.Background(), manifest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	baseline := baselineWith(site([]*yukonpb.ConditionPart{literal("secret-c"), code("secret")}, nil))
+	baseline := baselineWith(site([]*otherlodepb.ConditionPart{literal("secret-c"), code("secret")}, nil))
 	if err := r.AcceptStaticBaseline(context.Background(), baseline); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRedaction_On_UnknownFieldsDroppedFromManifest(t *testing.T) {
 	next := &recordingSink{}
 	r := NewRedaction(next, blocked(t, "never-matches"), nil)
 
-	s := site([]*yukonpb.ConditionPart{code("ok")}, []*yukonpb.ConditionPart{literal("x")})
+	s := site([]*otherlodepb.ConditionPart{code("ok")}, []*otherlodepb.ConditionPart{literal("x")})
 	s.ProtoReflect().SetUnknown(unknownBytes())
 	s.GetOutcomes()[0].GetCaseLabel()[0].ProtoReflect().SetUnknown(unknownBytes())
 	manifest := manifestWith(s)
@@ -259,7 +259,7 @@ func TestRedaction_On_UnknownFieldsDroppedFromStaticBaseline(t *testing.T) {
 	next := &recordingSink{}
 	r := NewRedaction(next, RedactionConfig{AllLiterals: true}, nil)
 
-	s := site([]*yukonpb.ConditionPart{code("ok")}, nil)
+	s := site([]*otherlodepb.ConditionPart{code("ok")}, nil)
 	s.ProtoReflect().SetUnknown(unknownBytes())
 	baseline := baselineWith(s)
 	baseline.ProtoReflect().SetUnknown(unknownBytes())
@@ -282,9 +282,9 @@ func TestRedaction_On_UnknownFieldsDroppedFromDeltaBatch(t *testing.T) {
 	next := &recordingSink{}
 	r := NewRedaction(next, RedactionConfig{AllLiterals: true}, nil)
 
-	delta := &yukonpb.ProbeDelta{ClassId: 7, HitsTotal: 3}
+	delta := &otherlodepb.ProbeDelta{ClassId: 7, HitsTotal: 3}
 	delta.ProtoReflect().SetUnknown(unknownBytes())
-	batch := &yukonpb.DeltaBatch{Resource: resourceFor("run-1"), Deltas: []*yukonpb.ProbeDelta{delta}}
+	batch := &otherlodepb.DeltaBatch{Resource: resourceFor("run-1"), Deltas: []*otherlodepb.ProbeDelta{delta}}
 	batch.GetResource().ProtoReflect().SetUnknown(unknownBytes())
 	batch.ProtoReflect().SetUnknown(unknownBytes())
 

@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/LukeDevOps/yukon-collector/internal/forward"
-	"github.com/LukeDevOps/yukon-collector/internal/processor"
+	"github.com/otherlodehq/otherlode-collector/internal/forward"
+	"github.com/otherlodehq/otherlode-collector/internal/processor"
 )
 
 // writeTokenFile writes content to a new file and returns its path.
@@ -90,52 +90,52 @@ func TestResolveAuthTokens(t *testing.T) {
 		wantErr  bool
 	}{
 		"single token": {
-			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "s3cret"},
+			env:      map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN": "s3cret"},
 			accepted: []string{"s3cret"},
 			refused:  []string{"other"},
 		},
 		"token list": {
-			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "old, new"},
+			env:      map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN": "old, new"},
 			accepted: []string{"old", "new"},
 			refused:  []string{"old, new", " new", "other"},
 		},
 		"token and opt-out, token wins": {
-			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "s3cret", "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			env:      map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN": "s3cret", "OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "1"},
 			accepted: []string{"s3cret"},
 			refused:  []string{""},
 		},
 		"empty list entry": {
-			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "a,,b"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN": "a,,b"},
 			wantErr: true,
 		},
 		"empty list entry with opt-out": {
-			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "a,", "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN": "a,", "OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "1"},
 			wantErr: true,
 		},
 		"token file": {
-			env:      map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": goodFile},
+			env:      map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE": goodFile},
 			accepted: []string{"file-a", "file-b"},
 			refused:  []string{"# agents", "", "other"},
 			wantFile: true,
 		},
 		"both variables set": {
-			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN": "s3cret", "YUKON_COLLECTOR_AUTH_TOKEN_FILE": goodFile},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN": "s3cret", "OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE": goodFile},
 			wantErr: true,
 		},
 		"missing token file": {
-			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": missingFile},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE": missingFile},
 			wantErr: true,
 		},
 		"missing token file with opt-out": {
-			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": missingFile, "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE": missingFile, "OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "1"},
 			wantErr: true,
 		},
 		"empty token file with opt-out": {
-			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": emptyFile, "YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE": emptyFile, "OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "1"},
 			wantErr: true,
 		},
 		"comment-only token file with opt-out": {
-			env:     map[string]string{"YUKON_COLLECTOR_AUTH_TOKEN_FILE": commentFile, "YUKON_COLLECTOR_INSECURE_NO_AUTH": "true"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE": commentFile, "OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "true"},
 			wantErr: true,
 		},
 		"nothing set": {
@@ -143,15 +143,15 @@ func TestResolveAuthTokens(t *testing.T) {
 			wantErr: true,
 		},
 		"nothing set, explicit opt-out": {
-			env:    map[string]string{"YUKON_COLLECTOR_INSECURE_NO_AUTH": "1"},
+			env:    map[string]string{"OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "1"},
 			noAuth: true,
 		},
 		"nothing set, opt-out false": {
-			env:     map[string]string{"YUKON_COLLECTOR_INSECURE_NO_AUTH": "false"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "false"},
 			wantErr: true,
 		},
 		"nothing set, unparsable opt-out": {
-			env:     map[string]string{"YUKON_COLLECTOR_INSECURE_NO_AUTH": "not-a-bool"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_INSECURE_NO_AUTH": "not-a-bool"},
 			wantErr: true,
 		},
 	}
@@ -307,14 +307,14 @@ func TestResolveForwardConfig_Unset_LeavesZeroValues(t *testing.T) {
 
 func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
 	cfg, _, err := resolveForwardConfig(envFrom(map[string]string{
-		"YUKON_COLLECTOR_FORWARD_URL":                    "https://backend.example.com",
-		"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN":             "backend-secret",
-		"YUKON_COLLECTOR_FORWARD_SHARDS":                 "4",
-		"YUKON_COLLECTOR_FORWARD_QUEUE_SIZE":             "128",
-		"YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "15s",
-		"YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "2s",
-		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "1m",
-		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME": "10m",
+		"OTHERLODE_COLLECTOR_FORWARD_URL":                    "https://backend.example.com",
+		"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN":             "backend-secret",
+		"OTHERLODE_COLLECTOR_FORWARD_SHARDS":                 "4",
+		"OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE":             "128",
+		"OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "15s",
+		"OTHERLODE_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "2s",
+		"OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "1m",
+		"OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME": "10m",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -352,41 +352,41 @@ func TestResolveForwardConfig_AuthToken(t *testing.T) {
 			want: "",
 		},
 		"key from variable, never split": {
-			env:  map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": "a,b"},
+			env:  map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": "a,b"},
 			want: "a,b",
 		},
 		"key from variable, spaces trimmed": {
-			env:  map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": " backend-secret\n"},
+			env:  map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": " backend-secret\n"},
 			want: "backend-secret",
 		},
 		"variable with only spaces": {
-			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": " \n"},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": " \n"},
 			wantErr: true,
 		},
 		"variable with only spaces and a file": {
-			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": " ", "YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": " ", "OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
 			wantErr: true,
 			errHas:  "both set",
 		},
 		"key from file": {
-			env:      map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
+			env:      map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
 			want:     "file-key",
 			wantFile: true,
 		},
 		"both variables set": {
-			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN": "backend-secret", "YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": "backend-secret", "OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
 			wantErr: true,
 		},
 		"file with no key": {
-			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": noKey},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": noKey},
 			wantErr: true,
 		},
 		"file with two keys": {
-			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": twoKeys},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": twoKeys},
 			wantErr: true,
 		},
 		"missing file": {
-			env:     map[string]string{"YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": missing},
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": missing},
 			wantErr: true,
 		},
 	}
@@ -554,7 +554,7 @@ func TestResolveNamespace(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected an error, got nil")
 				}
-				if !strings.Contains(err.Error(), "YUKON_COLLECTOR_SERVICE_NAMESPACE") {
+				if !strings.Contains(err.Error(), "OTHERLODE_COLLECTOR_SERVICE_NAMESPACE") {
 					t.Fatalf("error %q does not name the variable", err)
 				}
 				return
@@ -571,12 +571,12 @@ func TestResolveNamespace(t *testing.T) {
 
 func TestResolveForwardConfig_BadValues_Error(t *testing.T) {
 	for name, value := range map[string]string{
-		"YUKON_COLLECTOR_FORWARD_SHARDS":                 "0",
-		"YUKON_COLLECTOR_FORWARD_QUEUE_SIZE":             "-1",
-		"YUKON_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "10",
-		"YUKON_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "soon",
-		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "0s",
-		"YUKON_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME": "-5m",
+		"OTHERLODE_COLLECTOR_FORWARD_SHARDS":                 "0",
+		"OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE":             "-1",
+		"OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "10",
+		"OTHERLODE_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "soon",
+		"OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "0s",
+		"OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_ELAPSED_TIME": "-5m",
 	} {
 		if _, _, err := resolveForwardConfig(envFrom(map[string]string{name: value})); err == nil {
 			t.Errorf("%s=%q: expected an error, got nil", name, value)
@@ -617,7 +617,7 @@ func TestResolveRedaction_InvalidPattern_ErrorNamesVariableAndLine(t *testing.T)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
-	for _, want := range []string{"YUKON_COLLECTOR_REDACT_BLOCKED_VALUES", "line 3"} {
+	for _, want := range []string{"OTHERLODE_COLLECTOR_REDACT_BLOCKED_VALUES", "line 3"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not name %q", err, want)
 		}
@@ -649,7 +649,7 @@ func TestResolveRedaction_AllLiteralsGarbage_Errors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for an unparsable boolean, got nil")
 	}
-	if !strings.Contains(err.Error(), "YUKON_COLLECTOR_REDACT_ALL_LITERALS") {
+	if !strings.Contains(err.Error(), "OTHERLODE_COLLECTOR_REDACT_ALL_LITERALS") {
 		t.Fatalf("error %q does not name the variable", err)
 	}
 }

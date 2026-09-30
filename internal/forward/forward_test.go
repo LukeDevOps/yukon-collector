@@ -16,10 +16,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/ingest"
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/ingest"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 // discardLogger keeps test output free of expected Warn lines (queue-full,
@@ -58,8 +58,8 @@ func mustNewSink(t *testing.T, cfg Config) *ForwardingSink {
 	return sink
 }
 
-func manifestWithService(name string) *yukonpb.ProbeManifest {
-	return &yukonpb.ProbeManifest{Resource: &yukonpb.ResourceAttributes{ServiceName: name, ServiceInstanceId: "instance-1", RunId: "run-1"}}
+func manifestWithService(name string) *otherlodepb.ProbeManifest {
+	return &otherlodepb.ProbeManifest{Resource: &otherlodepb.ResourceAttributes{ServiceName: name, ServiceInstanceId: "instance-1", RunId: "run-1"}}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
@@ -110,7 +110,7 @@ func TestForwardingSink_Manifest_RelayedToBackendPath(t *testing.T) {
 		t.Errorf("authorization = %q, want %q", gotAuth, "Bearer backend-secret")
 	}
 
-	var manifest yukonpb.ProbeManifest
+	var manifest otherlodepb.ProbeManifest
 	if err := proto.Unmarshal(gotBody, &manifest); err != nil {
 		t.Fatalf("unmarshal relayed body: %v", err)
 	}
@@ -133,8 +133,8 @@ func TestForwardingSink_DeltaBatch_RelayedToBackendPath(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	sink.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	})
 
 	waitFor(t, time.Second, received.Load)
@@ -160,8 +160,8 @@ func TestForwardingSink_StaticBaseline_RelayedToBackendPath(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sent := &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	sent := &otherlodepb.StaticBaseline{
+		Resource:   &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkIndex: 1,
 		ChunkCount: 2,
@@ -176,7 +176,7 @@ func TestForwardingSink_StaticBaseline_RelayedToBackendPath(t *testing.T) {
 		t.Errorf("content-type = %q, want application/x-protobuf", gotContentType)
 	}
 
-	var got yukonpb.StaticBaseline
+	var got otherlodepb.StaticBaseline
 	if err := proto.Unmarshal(gotBody, &got); err != nil {
 		t.Fatalf("unmarshal relayed body: %v", err)
 	}
@@ -351,11 +351,11 @@ func TestForwardingSink_RunIdChange_KeepsInstanceOnItsShard(t *testing.T) {
 		sink.Shutdown(ctx)
 	})
 
-	resource := func(runID string) *yukonpb.ResourceAttributes {
-		return &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "instance-1", RunId: runID}
+	resource := func(runID string) *otherlodepb.ResourceAttributes {
+		return &otherlodepb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "instance-1", RunId: runID}
 	}
 
-	if err := sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{Resource: resource("run-a")}); err != nil {
+	if err := sink.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{Resource: resource("run-a")}); err != nil {
 		t.Fatalf("delta batch: unexpected error: %v", err)
 	}
 	select {
@@ -363,10 +363,10 @@ func TestForwardingSink_RunIdChange_KeepsInstanceOnItsShard(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("backend never received the delta batch")
 	}
-	if err := sink.AcceptManifest(context.Background(), &yukonpb.ProbeManifest{Resource: resource("run-b")}); err != nil {
+	if err := sink.AcceptManifest(context.Background(), &otherlodepb.ProbeManifest{Resource: resource("run-b")}); err != nil {
 		t.Fatalf("manifest: unexpected error: %v", err)
 	}
-	baseline := &yukonpb.StaticBaseline{Resource: resource("run-c"), ScannedAt: 1700000000, ChunkCount: 1}
+	baseline := &otherlodepb.StaticBaseline{Resource: resource("run-c"), ScannedAt: 1700000000, ChunkCount: 1}
 	if err := sink.AcceptStaticBaseline(context.Background(), baseline); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("static baseline error = %v, want it to wrap ErrQueueFull (all three runs share one shard)", err)
 	}
@@ -380,7 +380,7 @@ func TestForwardingSink_DifferentShards_OneStuckDoesNotBlockAnother(t *testing.T
 	var bReceived atomic.Bool
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var manifest yukonpb.ProbeManifest
+		var manifest otherlodepb.ProbeManifest
 		body, _ := io.ReadAll(r.Body)
 		_ = proto.Unmarshal(body, &manifest)
 		if manifest.GetResource().GetServiceName() == keyA {
@@ -609,9 +609,9 @@ func TestForwardingSink_DropLog_NamesTheService(t *testing.T) {
 	cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	sink := mustNewSink(t, cfg)
 
-	resource := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
+	resource := &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
 	resource.SetServiceNamespace("team-a")
-	sink.AcceptDeltaBatch(context.Background(), &yukonpb.DeltaBatch{Resource: resource})
+	sink.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{Resource: resource})
 	sink.Shutdown(context.Background())
 
 	got := logs.String()
@@ -649,15 +649,15 @@ func TestInstance_ShardKey_DistinctInstancesNeverCollide(t *testing.T) {
 }
 
 func TestInstance_ShardKey_SameInstanceSameKey(t *testing.T) {
-	a := instanceOf(&yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"})
-	b := instanceOf(&yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-2"})
+	a := instanceOf(&otherlodepb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"})
+	b := instanceOf(&otherlodepb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-2"})
 	if a.shardKey() != b.shardKey() {
 		t.Fatalf("shard keys differ across runs of one instance: %q and %q", a.shardKey(), b.shardKey())
 	}
 }
 
 func TestInstance_ShardKey_NamespaceTellsInstancesApart(t *testing.T) {
-	res := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
+	res := &otherlodepb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 	unspecified := instanceOf(res).shardKey()
 	res.SetServiceNamespace("team-a")
 	if named := instanceOf(res).shardKey(); named == unspecified {
@@ -666,9 +666,9 @@ func TestInstance_ShardKey_NamespaceTellsInstancesApart(t *testing.T) {
 }
 
 func TestInstance_ShardKey_SurroundingSpacesKeepOneKey(t *testing.T) {
-	trimmed := &yukonpb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
+	trimmed := &otherlodepb.ResourceAttributes{ServiceName: "svc", ServiceInstanceId: "i1", RunId: "run-1"}
 	trimmed.SetServiceNamespace("team-a")
-	padded := &yukonpb.ResourceAttributes{ServiceName: " svc ", ServiceInstanceId: "i1", RunId: "run-1"}
+	padded := &otherlodepb.ResourceAttributes{ServiceName: " svc ", ServiceInstanceId: "i1", RunId: "run-1"}
 	padded.SetServiceNamespace(" team-a ")
 	if a, b := instanceOf(trimmed).shardKey(), instanceOf(padded).shardKey(); a != b {
 		t.Fatalf("surrounding spaces split one service across shard keys %q and %q", a, b)

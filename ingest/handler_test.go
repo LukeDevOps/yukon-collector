@@ -12,28 +12,28 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	yukonpb "buf.build/gen/go/lukedevops-oss/yukon/protocolbuffers/go"
+	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 type fakeSink struct {
-	deltaBatches []*yukonpb.DeltaBatch
-	manifests    []*yukonpb.ProbeManifest
-	baselines    []*yukonpb.StaticBaseline
+	deltaBatches []*otherlodepb.DeltaBatch
+	manifests    []*otherlodepb.ProbeManifest
+	baselines    []*otherlodepb.StaticBaseline
 }
 
-func (f *fakeSink) AcceptDeltaBatch(_ context.Context, batch *yukonpb.DeltaBatch) error {
+func (f *fakeSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBatch) error {
 	f.deltaBatches = append(f.deltaBatches, batch)
 	return nil
 }
 
-func (f *fakeSink) AcceptManifest(_ context.Context, manifest *yukonpb.ProbeManifest) error {
+func (f *fakeSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeManifest) error {
 	f.manifests = append(f.manifests, manifest)
 	return nil
 }
 
-func (f *fakeSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.StaticBaseline) error {
+func (f *fakeSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.StaticBaseline) error {
 	f.baselines = append(f.baselines, baseline)
 	return nil
 }
@@ -42,15 +42,15 @@ func (f *fakeSink) AcceptStaticBaseline(_ context.Context, baseline *yukonpb.Sta
 // not take the write (a database outage, for example).
 type failingSink struct{}
 
-func (failingSink) AcceptDeltaBatch(context.Context, *yukonpb.DeltaBatch) error {
+func (failingSink) AcceptDeltaBatch(context.Context, *otherlodepb.DeltaBatch) error {
 	return errors.New("sink unavailable")
 }
 
-func (failingSink) AcceptManifest(context.Context, *yukonpb.ProbeManifest) error {
+func (failingSink) AcceptManifest(context.Context, *otherlodepb.ProbeManifest) error {
 	return errors.New("sink unavailable")
 }
 
-func (failingSink) AcceptStaticBaseline(context.Context, *yukonpb.StaticBaseline) error {
+func (failingSink) AcceptStaticBaseline(context.Context, *otherlodepb.StaticBaseline) error {
 	return errors.New("sink unavailable")
 }
 
@@ -74,17 +74,17 @@ func (s ctxCheckSink) checkContext(ctx context.Context) {
 	}
 }
 
-func (s ctxCheckSink) AcceptDeltaBatch(ctx context.Context, _ *yukonpb.DeltaBatch) error {
+func (s ctxCheckSink) AcceptDeltaBatch(ctx context.Context, _ *otherlodepb.DeltaBatch) error {
 	s.checkContext(ctx)
 	return nil
 }
 
-func (s ctxCheckSink) AcceptManifest(ctx context.Context, _ *yukonpb.ProbeManifest) error {
+func (s ctxCheckSink) AcceptManifest(ctx context.Context, _ *otherlodepb.ProbeManifest) error {
 	s.checkContext(ctx)
 	return nil
 }
 
-func (s ctxCheckSink) AcceptStaticBaseline(ctx context.Context, _ *yukonpb.StaticBaseline) error {
+func (s ctxCheckSink) AcceptStaticBaseline(ctx context.Context, _ *otherlodepb.StaticBaseline) error {
 	s.checkContext(ctx)
 	return nil
 }
@@ -100,14 +100,14 @@ func TestHandleDeltaBatch_ValidPayload_ReachesSink(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	batch := &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{
+	batch := &otherlodepb.DeltaBatch{
+		Resource: &otherlodepb.ResourceAttributes{
 			ServiceName:       "demo-service",
 			ServiceInstanceId: "instance-1",
 			RunId:             "run-1",
 		},
-		Deltas: []*yukonpb.ProbeDelta{
-			{ClassId: 1, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, HitsTotal: 5},
+		Deltas: []*otherlodepb.ProbeDelta{
+			{ClassId: 1, ProbeIndex: 0, Kind: otherlodepb.ProbeKind_METHOD, HitsTotal: 5},
 		},
 	}
 	body, err := proto.Marshal(batch)
@@ -115,7 +115,7 @@ func TestHandleDeltaBatch_ValidPayload_ReachesSink(t *testing.T) {
 		t.Fatalf("marshal batch: %v", err)
 	}
 
-	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf", strings.NewReader(string(body)))
+	resp, err := http.Post(server.URL+"/v1/otherlode/deltas", "application/x-protobuf", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestHandleDeltaBatch_MalformedBody_RejectedWithoutReachingSink(t *testing.T
 	server := newTestServer(sink)
 	defer server.Close()
 
-	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf", strings.NewReader("not a protobuf message"))
+	resp, err := http.Post(server.URL+"/v1/otherlode/deltas", "application/x-protobuf", strings.NewReader("not a protobuf message"))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -156,13 +156,13 @@ func TestHandleDeltaBatch_WrongContentType_Rejected(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	batch := &yukonpb.DeltaBatch{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}}
+	batch := &otherlodepb.DeltaBatch{Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}}
 	body, err := proto.Marshal(batch)
 	if err != nil {
 		t.Fatalf("marshal batch: %v", err)
 	}
 
-	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/json", strings.NewReader(string(body)))
+	resp, err := http.Post(server.URL+"/v1/otherlode/deltas", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestHandleDeltaBatch_BodyTooLarge_Rejected(t *testing.T) {
 
 	oversized := strings.Repeat("x", maxBodyBytes+1)
 
-	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf", strings.NewReader(oversized))
+	resp, err := http.Post(server.URL+"/v1/otherlode/deltas", "application/x-protobuf", strings.NewReader(oversized))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -202,13 +202,13 @@ func TestHandleDeltaBatch_EndpointDeltas_ReachSinkIntact(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	batch := &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{
+	batch := &otherlodepb.DeltaBatch{
+		Resource: &otherlodepb.ResourceAttributes{
 			ServiceName:       "demo-service",
 			ServiceInstanceId: "instance-1",
 			RunId:             "run-1",
 		},
-		EndpointDeltas: []*yukonpb.EndpointDelta{
+		EndpointDeltas: []*otherlodepb.EndpointDelta{
 			{EndpointId: 1, FirstSeenAt: 1700000000, HitsTotal: 7},
 			{EndpointId: 2, FirstSeenAt: 1700000100, HitsTotal: 0},
 		},
@@ -233,10 +233,10 @@ func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	manifest := &yukonpb.ProbeManifest{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
-		Probes: []*yukonpb.ProbeLocation{
-			{ClassId: 1, ProbeIndex: 0, Kind: yukonpb.ProbeKind_METHOD, ClassName: "com.example.Foo"},
+	manifest := &otherlodepb.ProbeManifest{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+		Probes: []*otherlodepb.ProbeLocation{
+			{ClassId: 1, ProbeIndex: 0, Kind: otherlodepb.ProbeKind_METHOD, ClassName: "com.example.Foo"},
 		},
 	}
 	body, err := proto.Marshal(manifest)
@@ -244,7 +244,7 @@ func TestHandleManifest_ValidPayload_ReachesSink(t *testing.T) {
 		t.Fatalf("marshal manifest: %v", err)
 	}
 
-	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/x-protobuf", strings.NewReader(string(body)))
+	resp, err := http.Post(server.URL+"/v1/otherlode/manifest", "application/x-protobuf", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -267,16 +267,16 @@ func TestHandleManifest_Endpoints_ReachSinkIntact(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	manifest := &yukonpb.ProbeManifest{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
-		Endpoints: []*yukonpb.EndpointLocation{
+	manifest := &otherlodepb.ProbeManifest{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+		Endpoints: []*otherlodepb.EndpointLocation{
 			{
 				EndpointId:        1,
 				Verb:              "GET",
 				RouteTemplate:     "/checkout/{id}",
 				VerbatimTemplate:  "/checkout/{id}",
 				Framework:         "spring-mvc",
-				DiscoverySource:   yukonpb.EndpointDiscoverySource_REGISTRATION,
+				DiscoverySource:   otherlodepb.EndpointDiscoverySource_REGISTRATION,
 				HandlerClass:      proto.String("com.example.CheckoutController"),
 				HandlerMethod:     proto.String("get"),
 				HandlerDescriptor: proto.String("(Ljava/lang/String;)Lorg/springframework/http/ResponseEntity;"),
@@ -287,10 +287,10 @@ func TestHandleManifest_Endpoints_ReachSinkIntact(t *testing.T) {
 				RouteTemplate:    "/promo",
 				VerbatimTemplate: "/promo",
 				Framework:        "spring-mvc",
-				DiscoverySource:  yukonpb.EndpointDiscoverySource_DISPATCH,
+				DiscoverySource:  otherlodepb.EndpointDiscoverySource_DISPATCH,
 			},
 		},
-		DisabledEndpointModules: []*yukonpb.DisabledEndpointModule{
+		DisabledEndpointModules: []*otherlodepb.DisabledEndpointModule{
 			{Module: "jdk-httpserver", Reason: "no supported framework class on the classpath", DisabledAt: 1700000000},
 		},
 	}
@@ -314,9 +314,9 @@ func TestHandleManifest_EndpointsWithoutInstanceId_Rejected(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	manifest := &yukonpb.ProbeManifest{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"},
-		Endpoints: []*yukonpb.EndpointLocation{
+	manifest := &otherlodepb.ProbeManifest{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"},
+		Endpoints: []*otherlodepb.EndpointLocation{
 			{EndpointId: 1, Verb: "GET", RouteTemplate: "/checkout/{id}"},
 		},
 	}
@@ -337,7 +337,7 @@ func TestHandleManifest_MalformedBody_RejectedWithoutReachingSink(t *testing.T) 
 	server := newTestServer(sink)
 	defer server.Close()
 
-	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/x-protobuf", strings.NewReader("not a protobuf message"))
+	resp, err := http.Post(server.URL+"/v1/otherlode/manifest", "application/x-protobuf", strings.NewReader("not a protobuf message"))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -356,13 +356,13 @@ func TestHandleManifest_WrongContentType_Rejected(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	manifest := &yukonpb.ProbeManifest{Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}}
+	manifest := &otherlodepb.ProbeManifest{Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}}
 	body, err := proto.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
 	}
 
-	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/json", strings.NewReader(string(body)))
+	resp, err := http.Post(server.URL+"/v1/otherlode/manifest", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestHandleManifest_BodyTooLarge_Rejected(t *testing.T) {
 
 	oversized := strings.Repeat("x", maxBodyBytes+1)
 
-	resp, err := http.Post(server.URL+"/v1/yukon/manifest", "application/x-protobuf", strings.NewReader(oversized))
+	resp, err := http.Post(server.URL+"/v1/otherlode/manifest", "application/x-protobuf", strings.NewReader(oversized))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -402,15 +402,15 @@ func TestHandleDeltaBatch_ContentTypeWithParameters_Accepted(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	batch := &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	batch := &otherlodepb.DeltaBatch{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	}
 	body, err := proto.Marshal(batch)
 	if err != nil {
 		t.Fatalf("marshal batch: %v", err)
 	}
 
-	resp, err := http.Post(server.URL+"/v1/yukon/deltas", "application/x-protobuf; charset=utf-8", strings.NewReader(string(body)))
+	resp, err := http.Post(server.URL+"/v1/otherlode/deltas", "application/x-protobuf; charset=utf-8", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -438,19 +438,19 @@ func postProto(t *testing.T, url string, msg proto.Message) *http.Response {
 }
 
 func TestHandleDeltaBatch_MissingIdentity_RejectedWithoutReachingSink(t *testing.T) {
-	for name, batch := range map[string]*yukonpb.DeltaBatch{
+	for name, batch := range map[string]*otherlodepb.DeltaBatch{
 		"empty body":          {},
-		"no resource":         {Deltas: []*yukonpb.ProbeDelta{{ClassId: 1}}},
-		"no service name":     {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}},
-		"no service instance": {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}},
-		"no run id":           {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}},
+		"no resource":         {Deltas: []*otherlodepb.ProbeDelta{{ClassId: 1}}},
+		"no service name":     {Resource: &otherlodepb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}},
+		"no service instance": {Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}},
+		"no run id":           {Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sink := &fakeSink{}
 			server := newTestServer(sink)
 			defer server.Close()
 
-			resp := postProto(t, server.URL+"/v1/yukon/deltas", batch)
+			resp := postProto(t, server.URL+"/v1/otherlode/deltas", batch)
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
@@ -463,19 +463,19 @@ func TestHandleDeltaBatch_MissingIdentity_RejectedWithoutReachingSink(t *testing
 }
 
 func TestHandleManifest_MissingIdentity_RejectedWithoutReachingSink(t *testing.T) {
-	for name, manifest := range map[string]*yukonpb.ProbeManifest{
+	for name, manifest := range map[string]*otherlodepb.ProbeManifest{
 		"empty body":          {},
-		"no resource":         {Probes: []*yukonpb.ProbeLocation{{ClassId: 1}}},
-		"no service name":     {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}},
-		"no service instance": {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}},
-		"no run id":           {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}},
+		"no resource":         {Probes: []*otherlodepb.ProbeLocation{{ClassId: 1}}},
+		"no service name":     {Resource: &otherlodepb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}},
+		"no service instance": {Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}},
+		"no run id":           {Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sink := &fakeSink{}
 			server := newTestServer(sink)
 			defer server.Close()
 
-			resp := postProto(t, server.URL+"/v1/yukon/manifest", manifest)
+			resp := postProto(t, server.URL+"/v1/otherlode/manifest", manifest)
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
@@ -488,11 +488,11 @@ func TestHandleManifest_MissingIdentity_RejectedWithoutReachingSink(t *testing.T
 }
 
 func TestHandler_EmptyRunId_RejectedForEveryPayload(t *testing.T) {
-	res := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}
+	res := &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}
 	for path, msg := range map[string]proto.Message{
-		DeltaBatchPath:     &yukonpb.DeltaBatch{Resource: res},
-		ManifestPath:       &yukonpb.ProbeManifest{Resource: res},
-		StaticBaselinePath: &yukonpb.StaticBaseline{Resource: res, ScannedAt: 1700000000, ChunkCount: 1},
+		DeltaBatchPath:     &otherlodepb.DeltaBatch{Resource: res},
+		ManifestPath:       &otherlodepb.ProbeManifest{Resource: res},
+		StaticBaselinePath: &otherlodepb.StaticBaseline{Resource: res, ScannedAt: 1700000000, ChunkCount: 1},
 	} {
 		t.Run(path, func(t *testing.T) {
 			sink := &fakeSink{}
@@ -519,25 +519,25 @@ func TestHandler_EmptyRunId_RejectedForEveryPayload(t *testing.T) {
 }
 
 func TestHandler_UnnameableServiceIdentity_RejectedForEveryPayload(t *testing.T) {
-	withNamespace := func(namespace string) *yukonpb.ResourceAttributes {
-		res := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
+	withNamespace := func(namespace string) *otherlodepb.ResourceAttributes {
+		res := &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
 		res.SetServiceNamespace(namespace)
 		return res
 	}
 	for name, tc := range map[string]struct {
-		res  *yukonpb.ResourceAttributes
+		res  *otherlodepb.ResourceAttributes
 		want string
 	}{
-		"blank service name": {&yukonpb.ResourceAttributes{ServiceName: "   ", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name is empty"},
-		"dot service name":   {&yukonpb.ResourceAttributes{ServiceName: ".", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name"},
-		"dots service name":  {&yukonpb.ResourceAttributes{ServiceName: " .. ", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name"},
+		"blank service name": {&otherlodepb.ResourceAttributes{ServiceName: "   ", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name is empty"},
+		"dot service name":   {&otherlodepb.ResourceAttributes{ServiceName: ".", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name"},
+		"dots service name":  {&otherlodepb.ResourceAttributes{ServiceName: " .. ", ServiceInstanceId: "instance-1", RunId: "run-1"}, "resource.service_name"},
 		"dot namespace":      {withNamespace("."), "resource.service_namespace"},
 		"dots namespace":     {withNamespace(" .. "), "resource.service_namespace"},
 	} {
 		for path, msg := range map[string]proto.Message{
-			DeltaBatchPath:     &yukonpb.DeltaBatch{Resource: tc.res},
-			ManifestPath:       &yukonpb.ProbeManifest{Resource: tc.res},
-			StaticBaselinePath: &yukonpb.StaticBaseline{Resource: tc.res, ScannedAt: 1700000000, ChunkCount: 1},
+			DeltaBatchPath:     &otherlodepb.DeltaBatch{Resource: tc.res},
+			ManifestPath:       &otherlodepb.ProbeManifest{Resource: tc.res},
+			StaticBaselinePath: &otherlodepb.StaticBaseline{Resource: tc.res, ScannedAt: 1700000000, ChunkCount: 1},
 		} {
 			t.Run(name+" "+path, func(t *testing.T) {
 				sink := &fakeSink{}
@@ -565,13 +565,13 @@ func TestHandler_UnnameableServiceIdentity_RejectedForEveryPayload(t *testing.T)
 }
 
 func TestHandler_DotsInsideAName_Accepted(t *testing.T) {
-	res := &yukonpb.ResourceAttributes{ServiceName: "checkout.v2", ServiceInstanceId: "instance-1", RunId: "run-1"}
+	res := &otherlodepb.ResourceAttributes{ServiceName: "checkout.v2", ServiceInstanceId: "instance-1", RunId: "run-1"}
 	res.SetServiceNamespace("...")
 	sink := &fakeSink{}
 	server := newTestServer(sink)
 	defer server.Close()
 
-	resp := postProto(t, server.URL+DeltaBatchPath, &yukonpb.DeltaBatch{Resource: res})
+	resp := postProto(t, server.URL+DeltaBatchPath, &otherlodepb.DeltaBatch{Resource: res})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
@@ -606,8 +606,8 @@ func TestHandleStaticBaseline_ValidPayload_ReachesSink(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	baseline := &yukonpb.StaticBaseline{
-		Resource: &yukonpb.ResourceAttributes{
+	baseline := &otherlodepb.StaticBaseline{
+		Resource: &otherlodepb.ResourceAttributes{
 			ServiceName:       "demo-service",
 			ServiceInstanceId: "instance-1",
 			RunId:             "run-1",
@@ -615,19 +615,19 @@ func TestHandleStaticBaseline_ValidPayload_ReachesSink(t *testing.T) {
 		ScannedAt:  1700000000,
 		ChunkIndex: 0,
 		ChunkCount: 2,
-		DeclaredClasses: []*yukonpb.DeclaredClass{
+		DeclaredClasses: []*otherlodepb.DeclaredClass{
 			{
 				ClassName: "com.example.Foo",
-				Methods:   []*yukonpb.DeclaredMethod{{MethodName: "bar", MethodDescriptor: "()V"}},
+				Methods:   []*otherlodepb.DeclaredMethod{{MethodName: "bar", MethodDescriptor: "()V"}},
 			},
 		},
-		StaticallyUnsafeClasses: []*yukonpb.StaticallyUnsafeClass{
+		StaticallyUnsafeClasses: []*otherlodepb.StaticallyUnsafeClass{
 			{ClassName: "com.example.Unsafe", Reason: "annotation not legal on a type"},
 		},
-		UnreadableClasses: []*yukonpb.UnreadableClass{
+		UnreadableClasses: []*otherlodepb.UnreadableClass{
 			{ClassName: "com.example.Unreadable", Reason: "corrupt class file"},
 		},
-		UnprobedClasses: []*yukonpb.UnprobedClass{
+		UnprobedClasses: []*otherlodepb.UnprobedClass{
 			{ClassName: "com.example.Unprobed", Reason: "interface with no concrete methods"},
 		},
 	}
@@ -670,8 +670,8 @@ func TestHandleStaticBaseline_WrongContentType_Rejected(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	baseline := &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	baseline := &otherlodepb.StaticBaseline{
+		Resource:   &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkCount: 1,
 	}
@@ -716,14 +716,14 @@ func TestHandleStaticBaseline_BodyTooLarge_Rejected(t *testing.T) {
 }
 
 func TestHandleStaticBaseline_InvalidFields_RejectedWithoutReachingSink(t *testing.T) {
-	validResource := &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
+	validResource := &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
 
-	for name, baseline := range map[string]*yukonpb.StaticBaseline{
+	for name, baseline := range map[string]*otherlodepb.StaticBaseline{
 		"empty body":                       {},
 		"no resource":                      {ScannedAt: 1700000000, ChunkCount: 1},
-		"no service name":                  {Resource: &yukonpb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}, ScannedAt: 1700000000, ChunkCount: 1},
-		"no service instance":              {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}, ScannedAt: 1700000000, ChunkCount: 1},
-		"no run id":                        {Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}, ScannedAt: 1700000000, ChunkCount: 1},
+		"no service name":                  {Resource: &otherlodepb.ResourceAttributes{ServiceInstanceId: "instance-1", RunId: "run-1"}, ScannedAt: 1700000000, ChunkCount: 1},
+		"no service instance":              {Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", RunId: "run-1"}, ScannedAt: 1700000000, ChunkCount: 1},
+		"no run id":                        {Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1"}, ScannedAt: 1700000000, ChunkCount: 1},
 		"zero scanned_at":                  {Resource: validResource, ScannedAt: 0, ChunkCount: 1},
 		"zero chunk_count":                 {Resource: validResource, ScannedAt: 1700000000, ChunkCount: 0},
 		"negative chunk_index":             {Resource: validResource, ScannedAt: 1700000000, ChunkCount: 1, ChunkIndex: -1},
@@ -751,8 +751,8 @@ func TestHandleStaticBaseline_LastChunk_Accepted(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	resp := postProto(t, server.URL+StaticBaselinePath, &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	resp := postProto(t, server.URL+StaticBaselinePath, &otherlodepb.StaticBaseline{
+		Resource:   &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkIndex: 2,
 		ChunkCount: 3,
@@ -768,8 +768,8 @@ func TestHandleStaticBaseline_EmptyScan_Accepted(t *testing.T) {
 	server := newTestServer(sink)
 	defer server.Close()
 
-	resp := postProto(t, server.URL+StaticBaselinePath, &yukonpb.StaticBaseline{
-		Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	resp := postProto(t, server.URL+StaticBaselinePath, &otherlodepb.StaticBaseline{
+		Resource:   &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 		ScannedAt:  1700000000,
 		ChunkIndex: 0,
 		ChunkCount: 1,
@@ -797,24 +797,24 @@ func TestHandler_SinkError_Returns503AndIncrementsRejected(t *testing.T) {
 			name:  "delta batch",
 			path:  DeltaBatchPath,
 			label: "deltas",
-			msg: &yukonpb.DeltaBatch{
-				Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+			msg: &otherlodepb.DeltaBatch{
+				Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 			},
 		},
 		{
 			name:  "manifest",
 			path:  ManifestPath,
 			label: "manifest",
-			msg: &yukonpb.ProbeManifest{
-				Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+			msg: &otherlodepb.ProbeManifest{
+				Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 			},
 		},
 		{
 			name:  "static baseline",
 			path:  StaticBaselinePath,
 			label: "static_baseline",
-			msg: &yukonpb.StaticBaseline{
-				Resource:   &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+			msg: &otherlodepb.StaticBaseline{
+				Resource:   &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 				ScannedAt:  1700000000,
 				ChunkCount: 1,
 			},
@@ -855,8 +855,8 @@ func TestHandler_PassesRequestContextToSink(t *testing.T) {
 	mux := http.NewServeMux()
 	NewHandler(sink, nil).Register(mux)
 
-	batch := &yukonpb.DeltaBatch{
-		Resource: &yukonpb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	batch := &otherlodepb.DeltaBatch{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
 	}
 	body, err := proto.Marshal(batch)
 	if err != nil {

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LukeDevOps/yukon-collector/internal/auth"
-	"github.com/LukeDevOps/yukon-collector/internal/forward"
-	"github.com/LukeDevOps/yukon-collector/internal/processor"
+	"github.com/otherlodehq/otherlode-collector/internal/auth"
+	"github.com/otherlodehq/otherlode-collector/internal/forward"
+	"github.com/otherlodehq/otherlode-collector/internal/processor"
 )
 
 func TestResolveAddr(t *testing.T) {
@@ -113,7 +113,7 @@ func TestRunSubcommand(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			getenv := func(key string) string {
-				if key == "YUKON_COLLECTOR_ADDR" {
+				if key == "OTHERLODE_COLLECTOR_ADDR" {
 					return c.addr
 				}
 				return ""

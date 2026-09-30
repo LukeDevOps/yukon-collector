@@ -34,7 +34,7 @@ var healthcheckClient = &http.Client{Transport: &http.Transport{Proxy: nil}}
 // typo never starts a second collector.
 func runSubcommand(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
 	if len(args) != 1 || args[0] != "healthcheck" {
-		fmt.Fprintln(stderr, "usage: yukon-collector [healthcheck]")
+		fmt.Fprintln(stderr, "usage: otherlode-collector [healthcheck]")
 		return 2
 	}
 	if err := healthcheckCommand(ctx, getenv); err != nil {
@@ -44,19 +44,19 @@ func runSubcommand(ctx context.Context, args []string, getenv func(string) strin
 	return 0
 }
 
-// healthcheckCommand probes /healthz on the address YUKON_COLLECTOR_ADDR
-// names, the same address the collector listens on.
+// healthcheckCommand probes /healthz on the address
+// OTHERLODE_COLLECTOR_ADDR names, the address the collector listens on.
 func healthcheckCommand(ctx context.Context, getenv func(string) string) error {
 	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
 	defer cancel()
-	target, err := healthzURL(ctx, resolveAddr(getenv("YUKON_COLLECTOR_ADDR")))
+	target, err := healthzURL(ctx, resolveAddr(getenv("OTHERLODE_COLLECTOR_ADDR")))
 	if err != nil {
 		return err
 	}
 	return runHealthcheck(ctx, target)
 }
 
-// resolveAddr returns raw (the value of YUKON_COLLECTOR_ADDR), or
+// resolveAddr returns raw (the value of OTHERLODE_COLLECTOR_ADDR), or
 // defaultAddr when raw is empty.
 func resolveAddr(raw string) string {
 	if raw == "" {

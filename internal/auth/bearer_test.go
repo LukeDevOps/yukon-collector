@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LukeDevOps/yukon-collector/metrics"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
 func newTestHandler() (http.Handler, *bool) {
