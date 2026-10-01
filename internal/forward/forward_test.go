@@ -261,8 +261,10 @@ func TestForwardingSink_RetryBudgetExhausted_StopsRetrying(t *testing.T) {
 
 func TestForwardingSink_QueueFull_RefusesNewestWithoutBlocking(t *testing.T) {
 	blockBackend := make(chan struct{})
+	entered := make(chan struct{}, 1)
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
 		<-blockBackend
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -288,11 +290,18 @@ func TestForwardingSink_QueueFull_RefusesNewestWithoutBlocking(t *testing.T) {
 
 	// Same key -> same shard -> same queue: item 1 gets picked up by the
 	// single worker (which then blocks in the handler above), item 2 fills
-	// the queue, item 3 finds the queue full and must be refused.
+	// the queue, item 3 finds the queue full and must be refused. Item 2
+	// waits until the handler holds item 1. Before that, item 1 can still
+	// sit in the queue, and item 2 is refused in its place.
 	var errs [3]error
+	errs[0] = sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("backend never received the first manifest")
+	}
 	done := make(chan struct{})
 	go func() {
-		errs[0] = sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 		errs[1] = sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 		errs[2] = sink.AcceptManifest(context.Background(), manifestWithService("svc"))
 		close(done)
