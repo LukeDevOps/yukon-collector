@@ -413,7 +413,8 @@ func TestRegisterRoutes_BothProcessorsSet_StampBothFields(t *testing.T) {
 // manifestWithLiteral is the smallest manifest the handler accepts, with
 // one probe whose branch site tests a string literal. Its top-level
 // message and its branch site each carry a field no schema version
-// declares.
+// declares. It comes from a test run, so a test can check that the flag
+// survives redaction.
 func manifestWithLiteral() *otherlodepb.ProbeManifest {
 	unknown := protowire.AppendString(protowire.AppendTag(nil, 9999, protowire.BytesType), "a newer literal")
 	site := &otherlodepb.BranchSite{Condition: []*otherlodepb.ConditionPart{
@@ -423,7 +424,7 @@ func manifestWithLiteral() *otherlodepb.ProbeManifest {
 	}}
 	site.ProtoReflect().SetUnknown(unknown)
 	manifest := &otherlodepb.ProbeManifest{
-		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1", TestRun: true},
 		Probes:   []*otherlodepb.ProbeLocation{{ClassName: "com.example.Pricing", MethodName: "price", BranchSites: []*otherlodepb.BranchSite{site}}},
 	}
 	manifest.ProtoReflect().SetUnknown(unknown)
@@ -494,6 +495,9 @@ func TestRegisterRoutes_RedactionOn_ForwardsManifestRedactedWithoutUnknownFields
 	}
 	if n := len(manifest.ProtoReflect().GetUnknown()); n != 0 {
 		t.Fatalf("forwarded manifest has %d unknown bytes, want 0", n)
+	}
+	if !manifest.GetResource().GetTestRun() {
+		t.Fatal("forwarded manifest lost test_run, a field these bindings know")
 	}
 	if n := len(site.ProtoReflect().GetUnknown()); n != 0 {
 		t.Fatalf("forwarded branch site has %d unknown bytes, want 0", n)

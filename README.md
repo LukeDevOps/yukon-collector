@@ -30,7 +30,7 @@ Otherlode agent  --POST protobuf-->  otherlode-collector  -->  Sink
 The agent's `HttpOtlpStyleExporter` posts three payload types, matching
 the paths this collector serves. Each one carries the same resource
 attributes: service namespace (optional), service name, version,
-instance ID, environment, and a run ID. A service is known by its
+instance ID, environment, a run ID, and a flag that marks a test run. A service is known by its
 namespace and name together. The agent makes a fresh random run ID for each process, so an
 instance restarted under a pinned instance ID still names a different run.
 
@@ -419,7 +419,11 @@ When the agent's value differs from the collector's, that is a mismatch:
 `otherlode_collector_environment_mismatch_total` goes up under either
 action, and a `debug` log line names the service, instance and run involved. A
 non-zero count means some JVM is configured for a different environment
-than the collector it reports to.
+than the collector it reports to, or that a test run reports through it.
+A test run names the environment `test` when nothing else names one
+(agent ADR 0050), so each of its payloads counts as a mismatch here.
+Under `upsert` its environment becomes the collector's, which is
+harmless, since the test-run flag travels with the payload.
 
 Setting `OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION` without also setting
 `OTHERLODE_COLLECTOR_ENVIRONMENT` is a misconfiguration and stops the
@@ -508,6 +512,12 @@ fields when it re-encodes a message for forwarding. An agent built
 against a newer schema than this collector could send a new field that
 carries a literal, and the collector would forward it unseen. The cost is
 that a newer agent's new fields are lost until the collector is updated.
+`test_run`, which marks a run in the adopter's test JVM (agent ADR 0050),
+is a field that older collectors drop this way. With redaction on, such a
+collector forwards a test run as an ordinary run in the `test`
+environment. If the test JVM names an environment, or the collector
+stamps its own with `upsert`, the run lands in that environment instead.
+So update the collector before an agent sets `testRun`.
 
 Redaction happens only here. An agent that posts straight to a backend,
 with no collector in between, sends literals in clear.

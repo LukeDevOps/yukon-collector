@@ -23,8 +23,8 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 }
 
 // AcceptDeltaBatch logs the batch's service identity, run ID,
-// environment, delta count, endpoint delta count, and dependency delta
-// count. It never fails.
+// environment, test-run flag, delta count, endpoint delta count, and
+// dependency delta count. It never fails.
 func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"namespace", batch.GetResource().GetServiceNamespace(),
@@ -32,6 +32,7 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBa
 		"instance", batch.GetResource().GetServiceInstanceId(),
 		"run", batch.GetResource().GetRunId(),
 		"environment", batch.GetResource().GetEnvironment(),
+		"test_run", batch.GetResource().GetTestRun(),
 		"deltas", len(batch.GetDeltas()),
 		"endpoint_deltas", len(batch.GetEndpointDeltas()),
 		"dependency_deltas", len(batch.GetDependencyDeltas()),
@@ -40,10 +41,10 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBa
 }
 
 // AcceptManifest logs the manifest's service identity, run ID,
-// environment, probe counts, call edge and supertype counts, endpoint
-// count, disabled endpoint module count, dependency and reference
-// counts, whether the instance records references, and whether its
-// dependency listing is delivered. It never fails.
+// environment, test-run flag, probe counts, call edge and supertype
+// counts, endpoint count, disabled endpoint module count, dependency and
+// reference counts, whether the instance records references, and whether
+// its dependency listing is delivered. It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"namespace", manifest.GetResource().GetServiceNamespace(),
@@ -51,6 +52,7 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeM
 		"instance", manifest.GetResource().GetServiceInstanceId(),
 		"run", manifest.GetResource().GetRunId(),
 		"environment", manifest.GetResource().GetEnvironment(),
+		"test_run", manifest.GetResource().GetTestRun(),
 		"probes", len(manifest.GetProbes()),
 		"call_edges", callEdgeCount(manifest.GetProbes()),
 		"class_locations", len(manifest.GetClassLocations()),
@@ -68,8 +70,8 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeM
 }
 
 // AcceptStaticBaseline logs the baseline's service identity, run ID,
-// environment, scan identity, chunk position, and class counts. It never
-// fails.
+// environment, test-run flag, scan identity, chunk position, and class
+// counts. It never fails.
 func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.StaticBaseline) error {
 	s.logger.Info("received static baseline",
 		"namespace", baseline.GetResource().GetServiceNamespace(),
@@ -77,6 +79,7 @@ func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.
 		"instance", baseline.GetResource().GetServiceInstanceId(),
 		"run", baseline.GetResource().GetRunId(),
 		"environment", baseline.GetResource().GetEnvironment(),
+		"test_run", baseline.GetResource().GetTestRun(),
 		"scanned_at", baseline.GetScannedAt(),
 		"chunk", baseline.GetChunkIndex(),
 		"chunk_count", baseline.GetChunkCount(),
