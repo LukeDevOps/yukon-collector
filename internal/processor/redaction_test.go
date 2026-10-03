@@ -146,6 +146,44 @@ func TestRedaction_CodeAndPlaceholderParts_NeverTouched(t *testing.T) {
 	assertTexts(t, "case label", s.GetOutcomes()[0].GetCaseLabel(), "Token.NONE")
 }
 
+func TestRedaction_NonCodeKinds_TreatedAsLiterals(t *testing.T) {
+	const unknownKind otherlodepb.ConditionPartKind = 7
+	configs := map[string]RedactionConfig{
+		"AllLiterals":   {AllLiterals: true},
+		"BlockedValues": blocked(t, "secret"),
+	}
+	for name, cfg := range configs {
+		t.Run(name, func(t *testing.T) {
+			next := &recordingSink{}
+			r := NewRedaction(next, cfg, nil)
+
+			manifest := manifestWith(site(
+				[]*otherlodepb.ConditionPart{
+					part(unknownKind, "secret-a"),
+					part(otherlodepb.ConditionPartKind_CONDITION_PART_KIND_UNSPECIFIED, "secret-b"),
+					code("secret-c"),
+					placeholder("secret-d"),
+				},
+				[]*otherlodepb.ConditionPart{part(unknownKind, "secret-e")},
+			))
+			if err := r.AcceptManifest(context.Background(), manifest); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			s := next.manifests[0].GetProbes()[0].GetBranchSites()[0]
+			cond := s.GetCondition()
+			assertTexts(t, "condition", cond, "…", "…", "secret-c", "secret-d")
+			if k := cond[0].GetKind(); k != unknownKind {
+				t.Errorf("redacted unknown part kind = %v, want 7", k)
+			}
+			if k := cond[1].GetKind(); k != otherlodepb.ConditionPartKind_CONDITION_PART_KIND_UNSPECIFIED {
+				t.Errorf("redacted unspecified part kind = %v, want UNSPECIFIED", k)
+			}
+			assertTexts(t, "case label", s.GetOutcomes()[0].GetCaseLabel(), "…")
+		})
+	}
+}
+
 func TestRedaction_BlockedPatternMatchesUnanchored(t *testing.T) {
 	next := &recordingSink{}
 	r := NewRedaction(next, blocked(t, "[0-9]{4}"), nil)

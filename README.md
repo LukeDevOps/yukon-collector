@@ -90,10 +90,12 @@ repo and is published to the Buf Schema Registry as
   backend over the same protobuf-over-HTTP shape the collector accepts,
   the way an OTel Collector exporter re-sends OTLP downstream. Payloads
   are queued and sent by background workers, sharded by service
-  namespace, service name and instance ID so one instance's failing
-  backend calls can't hold up another's. The run ID is left out of the shard key, so a restarted
-  instance keeps its shard and its payloads stay in order. Retries use
-  time-bounded exponential backoff on `429`/`502`/`503`/`504`. A full
+  namespace, service name and instance ID. Instances share a fixed number
+  of shards, so a stuck backend call for one instance holds up only the
+  instances on its shard. The run ID is left out of the shard key, so a
+  restarted instance keeps its shard and its payloads stay in order.
+  Retries use time-bounded exponential backoff on `429`, `502`, `503` and
+  `504`, and on transport errors that bring no response. A full
   shard queue refuses the payload with `503` instead of queuing it, so
   the agent sends it again.
 - `internal/processor` — sinks that wrap another sink, changing or
@@ -265,18 +267,41 @@ OTHERLODE_COLLECTOR_RATE_LIMIT_RPS=10 OTHERLODE_COLLECTOR_RATE_LIMIT_BURST=50 go
 
 A throttled request gets `429` with a `Retry-After` header.
 
+At startup an instance sends a manifest and then its static baseline
+chunks back to back. The agent stops a scan at the first chunk that
+fails, so a `429` on a chunk can lose that scan. Behind a proxy, set
+`OTHERLODE_COLLECTOR_CLIENT_IP_HEADER`. For pods behind one NAT address,
+raise `OTHERLODE_COLLECTOR_RATE_LIMIT_BURST`.
+
 The limit is keyed on the connection's remote address. Behind a reverse
 proxy or load balancer every agent arrives from the proxy's address and
 they all share one bucket, so set `OTHERLODE_COLLECTOR_CLIENT_IP_HEADER` to
 the header the proxy writes the real client address into
 (`X-Forwarded-For`, `X-Real-IP`, and so on). For a comma-separated list
 the last entry is used, since that is the one the nearest proxy wrote.
-The header is trusted as given: only set this when the collector cannot
-be reached except through that proxy.
+If the header appears on more than one line, the collector joins all the
+lines first and then takes the last entry. The header is trusted as
+given: only set this when the collector cannot be reached except through
+that proxy.
 
 ```
 OTHERLODE_COLLECTOR_CLIENT_IP_HEADER=X-Forwarded-For go run ./cmd/otherlode-collector
 ```
+
+IPv4 and IPv4-mapped IPv6 addresses are keyed on the IPv4 address. Each
+IPv6 address gets its own bucket by default. A single sender can cycle
+through the 2^64 addresses of a `/64`, so when the collector faces the
+internet directly, set `OTHERLODE_COLLECTOR_RATE_LIMIT_IPV6_PREFIX=64`
+to make every address in one `/64` share a bucket. The value is a prefix
+length from 1 to 128, and anything else stops the collector at startup.
+Leave it at the default when many agents share a `/64`, as VPC subnets
+and per-node pod ranges often do.
+
+The limiter tracks at most 100,000 clients. When that many are tracked,
+a request from a new client evicts the least recently used one. The
+evicted client loses only its bucket and gets a fresh full one on its
+next request. Agents flush every 30 to 60 seconds, so they stay near the
+front of the list.
 
 `/healthz` is never throttled, for the same liveness/readiness reason it's
 never gated on auth.
@@ -297,7 +322,7 @@ wildcard), exiting 0 or 1, and never through a proxy. The image's
 | Counter | Labels | Meaning |
 | --- | --- | --- |
 | `otherlode_collector_ingest_accepted_total` | `payload` | Decoded, valid, handed to the sink |
-| `otherlode_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before or by the sink: `content_type`, `too_large`, `read`, `malformed`, `invalid`, `sink` (the sink refused the payload; the response was `503`) |
+| `otherlode_collector_ingest_rejected_total` | `payload`, `reason` | Turned away before or by the sink: `content_type` (also a `Content-Encoding` other than `identity`, answered `415`), `too_large`, `read`, `malformed`, `invalid`, `sink` (the sink refused the payload; the response was `503`), `canceled` (the client went away while the request waited for a decode slot), `busy` (no decode slot came free within 5 seconds; the response was `503`) |
 | `otherlode_collector_auth_rejected_total` | | 401 responses |
 | `otherlode_collector_token_reload_failures_total` | `file` | A token file re-read that failed or found no usable token, so the last good value stayed; `file` is `auth` (`OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE`) or `forward` (`OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE`) |
 | `otherlode_collector_rate_limited_total` | | 429 responses |
@@ -324,7 +349,9 @@ By default the collector only logs what it receives. Set
 decoded payload is relayed there instead, as a `POST` to the same
 `/v1/otherlode/deltas`, `/v1/otherlode/manifest`, and
 `/v1/otherlode/static-baseline` paths with the same
-`application/x-protobuf` body. `OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN`,
+`application/x-protobuf` body. The URL must not have a query, a fragment or
+user info, and the collector stops at startup if it does.
+`OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN`,
 if set, is sent as a bearer token on those requests. Spaces around its
 value are trimmed, and a value of only spaces stops the collector at
 startup. It is a separate secret from `OTHERLODE_COLLECTOR_AUTH_TOKEN`:
@@ -345,16 +372,19 @@ lines are skipped, and spaces are trimmed. It must hold exactly one key,
 since the collector sends one key and the backend is where several keys
 can overlap during a rotation. Setting both variables stops the
 collector at startup, and so does a file that cannot be read or does
-not hold exactly one key. While forwarding is on, the collector reads
-the file again every 30 seconds and sends the new key from the next
-request on, and the same advice on changing the file applies. A re-read
-that fails, or finds no key or more than one, keeps the last good key,
-logs a warning, and counts in
+not hold exactly one key, a key with a control character, or a key
+variable set without `OTHERLODE_COLLECTOR_FORWARD_URL`. While
+forwarding is on, the collector reads the file again every 30 seconds
+and sends the new key from the next request on, and the same advice on
+changing the file applies. A re-read that fails, or finds no key, more
+than one, or a control character, keeps the last good key, logs a
+warning, and counts in
 `otherlode_collector_token_reload_failures_total{file="forward"}`.
 
 Forwarding is asynchronous. The agent gets its `202` as soon as the
 payload is decoded and queued; background workers deliver it, retrying
-`429`/`502`/`503`/`504` with exponential backoff for up to five minutes.
+`429`, `502`, `503`, `504` and transport errors that bring no response
+with exponential backoff for up to five minutes.
 When the payload's queue is full, or the collector is shutting down, the
 collector answers `503` instead and does not take the payload. The agent
 treats that like any failed flush: it retries a few times, then keeps its
@@ -365,17 +395,24 @@ dead for the life of that agent instance.
 
 A payload that fails after it is queued is dropped and counted: the
 backend answered with a status that is not retryable, or retries ran
-past five minutes. On shutdown, every payload the collector still holds
-gets one more delivery attempt within the shutdown deadline, whether it
-sits in a queue or a worker was waiting to retry it.
+past five minutes. A `3xx` from the backend is a permanent failure,
+because the collector does not follow redirects. On shutdown, every
+payload the collector still holds gets one more delivery attempt within
+the shutdown deadline, whether it sits in a queue or a worker was waiting
+to retry it. The deadline is 10 seconds in total, shared between stopping
+the HTTP server and draining the forward queues. Each shard drains in
+parallel with the others, and in order within its own shard.
 
-The defaults match the OTLP HTTP exporter's and should rarely need
-changing. Each can be overridden; durations use Go syntax (`30s`, `5m`).
+The request timeout and retry defaults match the OTLP HTTP exporter's.
+The shard count, queue size and queue byte budget are this collector's
+own. The defaults should rarely need changing. Each can be overridden;
+durations use Go syntax (`30s`, `5m`).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `OTHERLODE_COLLECTOR_FORWARD_SHARDS` | `8` | Independent queue/worker pairs; payloads are sharded by service namespace, service name and instance ID |
 | `OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE` | `64` | Queued payloads per shard before new ones are refused with `503` |
+| `OTHERLODE_COLLECTOR_FORWARD_QUEUE_BYTES` | `67108864` (64 MiB) | Marshaled bytes per shard, queued and in flight, before new payloads are refused with `503`; an idle shard accepts any payload |
 | `OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT` | `10s` | Bound on one delivery attempt |
 | `OTHERLODE_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL` | `5s` | First retry wait, grown 1.5x each attempt with jitter |
 | `OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL` | `30s` | Cap on the retry wait |
@@ -389,6 +426,28 @@ its `LogSink` will print what the first instance relayed. `internal/forward`'s i
 tests do the same thing without a second process, wiring `ForwardingSink`
 straight into a second `ingest.Handler` to confirm a payload decoded on
 one end survives the relay and decodes identically on the other.
+
+### Resource limits
+
+Decoding a protobuf can take much more memory than the request body: a
+16 MiB body of tiny messages can decode to gigabytes. Set `GOMEMLIMIT` and
+a container memory limit, and keep authentication on.
+
+`OTHERLODE_COLLECTOR_MAX_CONCURRENT_DECODES` caps how many requests are
+decoded and handed to the sink at one time. The default is the number of
+CPUs (`GOMAXPROCS`), because decoding is CPU-bound and more parallel
+decodes than CPUs gain no throughput. A request reads its body first and
+takes a slot only after that, so a slow sender holds no slot. A request
+that waits for a slot is dropped if its client disconnects. One that
+waits more than 5 seconds gets `503` with `Retry-After: 1`. The forward
+queue is also bounded by bytes: `OTHERLODE_COLLECTOR_FORWARD_QUEUE_BYTES`
+(default `67108864`, 64 MiB) is the budget per shard for queued and
+in-flight payloads. A shard over budget refuses new payloads with `503`,
+except when it holds nothing, so one payload larger than the budget can
+still pass through an idle shard. The worst case is roughly the decode
+cap times the largest decode, plus the bodies waiting for a slot (up to
+16 MiB each, bounded by open connections), plus the shard count times the
+larger of the queue byte budget and the largest payload.
 
 ### Environment
 
@@ -518,6 +577,10 @@ collector forwards a test run as an ordinary run in the `test`
 environment. If the test JVM names an environment, or the collector
 stamps its own with `upsert`, the run lands in that environment instead.
 So update the collector before an agent sets `testRun`.
+
+While redaction is on, a condition part of any kind other than code or
+placeholder is treated as a string literal. A newer agent's unknown
+literal kind is redacted too, so redaction fails closed.
 
 Redaction happens only here. An agent that posts straight to a backend,
 with no collector in between, sends literals in clear.

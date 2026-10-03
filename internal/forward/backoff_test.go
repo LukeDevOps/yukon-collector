@@ -107,7 +107,7 @@ func TestBackoff_JitterSpreadsWaitAroundInterval(t *testing.T) {
 	}{
 		{rand: 0, want: 50 * time.Millisecond},         // interval * (1 - 0.5)
 		{rand: 0.5, want: 100 * time.Millisecond},      // interval * 1
-		{rand: 0.999, want: 149900 * time.Microsecond}, // just under interval * 1.5
+		{rand: 0.999, want: 149900 * time.Microsecond}, // under interval * 1.5
 	} {
 		b := newTestBackoff(clock, 100*time.Millisecond, time.Second, time.Hour)
 		b.rand = func() float64 { return tc.rand }

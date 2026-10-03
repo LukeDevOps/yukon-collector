@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -13,9 +14,11 @@ import (
 
 	"github.com/otherlodehq/otherlode-collector/internal/forward"
 	"github.com/otherlodehq/otherlode-collector/internal/processor"
+	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
-// writeTokenFile writes content to a new file and returns its path.
+// writeTokenFile writes content to a file in a fresh temp directory, so
+// each test owns its token file.
 func writeTokenFile(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "tokens")
@@ -263,6 +266,24 @@ func TestResolveRateLimit_NonFiniteRPS_Errors(t *testing.T) {
 	}
 }
 
+func TestResolveIPv6Prefix(t *testing.T) {
+	for raw, want := range map[string]int{"": 128, "1": 1, "64": 64, "128": 128} {
+		got, err := resolveIPv6Prefix(raw)
+		if err != nil {
+			t.Errorf("prefix %q: unexpected error: %v", raw, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("prefix %q = %d, want %d", raw, got, want)
+		}
+	}
+	for _, raw := range []string{"0", "129", "-1", "abc", "64.5", " "} {
+		if _, err := resolveIPv6Prefix(raw); err == nil {
+			t.Errorf("prefix %q: expected an error, got nil", raw)
+		}
+	}
+}
+
 func TestResolveLogLevel(t *testing.T) {
 	for raw, want := range map[string]slog.Level{
 		"":      slog.LevelInfo,
@@ -311,6 +332,7 @@ func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
 		"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN":             "backend-secret",
 		"OTHERLODE_COLLECTOR_FORWARD_SHARDS":                 "4",
 		"OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE":             "128",
+		"OTHERLODE_COLLECTOR_FORWARD_QUEUE_BYTES":            "1048576",
 		"OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "15s",
 		"OTHERLODE_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "2s",
 		"OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "1m",
@@ -324,6 +346,7 @@ func TestResolveForwardConfig_AllSet_ParsesEveryField(t *testing.T) {
 		AuthToken:            forward.StaticToken("backend-secret"),
 		Shards:               4,
 		QueueSize:            128,
+		QueueBytes:           1 << 20,
 		RequestTimeout:       15 * time.Second,
 		RetryInitialInterval: 2 * time.Second,
 		RetryMaxInterval:     time.Minute,
@@ -338,6 +361,7 @@ func TestResolveForwardConfig_AuthToken(t *testing.T) {
 	oneKey := writeTokenFile(t, "# backend key\n  file-key  \n\n")
 	noKey := writeTokenFile(t, "# rotating\n")
 	twoKeys := writeTokenFile(t, "key-1\nkey-2\n")
+	controlKey := writeTokenFile(t, "bad\x01key\n")
 	missing := filepath.Join(t.TempDir(), "missing")
 
 	tests := map[string]struct {
@@ -346,6 +370,7 @@ func TestResolveForwardConfig_AuthToken(t *testing.T) {
 		wantFile bool
 		wantErr  bool
 		errHas   string
+		noURL    bool
 	}{
 		"no key": {
 			env:  nil,
@@ -389,11 +414,50 @@ func TestResolveForwardConfig_AuthToken(t *testing.T) {
 			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": missing},
 			wantErr: true,
 		},
+		"variable with a newline inside": {
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": "bad\nkey"},
+			wantErr: true,
+			errHas:  "control character",
+		},
+		"variable with a tab inside": {
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": "bad\tkey"},
+			wantErr: true,
+			errHas:  "control character",
+		},
+		"variable with DEL": {
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": "bad\x7fkey"},
+			wantErr: true,
+			errHas:  "control character",
+		},
+		"file with a control character": {
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": controlKey},
+			wantErr: true,
+			errHas:  "control character",
+		},
+		"key variable without a URL": {
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN": "backend-secret"},
+			noURL:   true,
+			wantErr: true,
+			errHas:  "OTHERLODE_COLLECTOR_FORWARD_URL",
+		},
+		"key file without a URL": {
+			env:     map[string]string{"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": oneKey},
+			noURL:   true,
+			wantErr: true,
+			errHas:  "OTHERLODE_COLLECTOR_FORWARD_URL",
+		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			cfg, file, err := resolveForwardConfig(envFrom(tt.env))
+			env := map[string]string{}
+			if !tt.noURL {
+				env["OTHERLODE_COLLECTOR_FORWARD_URL"] = "http://backend.example.com"
+			}
+			for k, v := range tt.env {
+				env[k] = v
+			}
+			cfg, file, err := resolveForwardConfig(envFrom(env))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected an error, got nil")
@@ -460,6 +524,10 @@ func TestResolveEnvironment(t *testing.T) {
 		"whitespace-only value with action": {
 			value:   "   ",
 			action:  "upsert",
+			wantErr: true,
+		},
+		"value that is not valid UTF-8": {
+			value:   "pr\xffod",
 			wantErr: true,
 		},
 	}
@@ -545,6 +613,10 @@ func TestResolveNamespace(t *testing.T) {
 			action:  "upsert",
 			wantErr: true,
 		},
+		"value that is not valid UTF-8": {
+			value:   "te\xc3am",
+			wantErr: true,
+		},
 	}
 
 	for name, tt := range tests {
@@ -569,10 +641,33 @@ func TestResolveNamespace(t *testing.T) {
 	}
 }
 
+func TestResolveForwardConfig_KeyFileReread_BadKeyKeepsLastGoodKey(t *testing.T) {
+	path := writeTokenFile(t, "key-1\n")
+	cfg, file, err := resolveForwardConfig(envFrom(map[string]string{
+		"OTHERLODE_COLLECTOR_FORWARD_URL":             "http://backend.example.com",
+		"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE": path,
+	}))
+	if err != nil {
+		t.Fatalf("resolveForwardConfig: %v", err)
+	}
+	watchFile(t, file)
+
+	failuresBefore := metrics.TokenReloadFailures.Value("forward")
+	replaceTokenFile(t, path, "bad\x01key\n")
+	waitUntil(t, 2*time.Second, func() bool { return metrics.TokenReloadFailures.Value("forward") > failuresBefore })
+	if got := cfg.AuthToken.Token(); got != "key-1" {
+		t.Fatalf("key after a bad re-read = %q, want %q", got, "key-1")
+	}
+
+	replaceTokenFile(t, path, "key-2\n")
+	waitUntil(t, 2*time.Second, func() bool { return cfg.AuthToken.Token() == "key-2" })
+}
+
 func TestResolveForwardConfig_BadValues_Error(t *testing.T) {
 	for name, value := range map[string]string{
 		"OTHERLODE_COLLECTOR_FORWARD_SHARDS":                 "0",
 		"OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE":             "-1",
+		"OTHERLODE_COLLECTOR_FORWARD_QUEUE_BYTES":            "0",
 		"OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT":        "10",
 		"OTHERLODE_COLLECTOR_FORWARD_RETRY_INITIAL_INTERVAL": "soon",
 		"OTHERLODE_COLLECTOR_FORWARD_RETRY_MAX_INTERVAL":     "0s",
@@ -581,6 +676,32 @@ func TestResolveForwardConfig_BadValues_Error(t *testing.T) {
 		if _, _, err := resolveForwardConfig(envFrom(map[string]string{name: value})); err == nil {
 			t.Errorf("%s=%q: expected an error, got nil", name, value)
 		}
+	}
+}
+
+func TestResolveMaxConcurrentDecodes(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr bool
+	}{
+		{name: "unset defaults to GOMAXPROCS", value: "", want: runtime.GOMAXPROCS(0)},
+		{name: "positive value", value: "3", want: 3},
+		{name: "zero", value: "0", wantErr: true},
+		{name: "negative", value: "-2", wantErr: true},
+		{name: "not a number", value: "many", wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := resolveMaxConcurrentDecodes(envFrom(map[string]string{"OTHERLODE_COLLECTOR_MAX_CONCURRENT_DECODES": c.value}))
+			if (err != nil) != c.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, c.wantErr)
+			}
+			if got != c.want {
+				t.Errorf("got %d, want %d", got, c.want)
+			}
+		})
 	}
 }
 

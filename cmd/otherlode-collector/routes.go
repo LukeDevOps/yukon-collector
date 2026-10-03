@@ -12,50 +12,65 @@ import (
 	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
-// registerRoutes wires the ingest handler and health check onto mux. When
-// authTokens is non-nil, the ingest routes require an
-// "Authorization: Bearer <token>" header whose token is in authTokens.
-// Each request reads the current set, so a token file re-read applies
-// without a restart. When limiter is non-nil, the
-// ingest routes are throttled per client IP, checked before auth so a
-// flood is capped regardless of whether it carries a valid token.
-// /healthz and /metrics stay open, unauthenticated and unthrottled: the
-// first for liveness/readiness probes, the second for a Prometheus
-// scraper, which exposes only counts.
+// routeConfig holds what registerRoutes wires together. Every field may be
+// left as its zero value.
+type routeConfig struct {
+	// Logger receives the route and processor logs. Nil means slog.Default.
+	Logger *slog.Logger
+	// AuthTokens, when non-nil, makes the ingest routes require an
+	// "Authorization: Bearer <token>" header whose token is in the set.
+	// Each request reads the current set, so a token file re-read applies
+	// without a restart.
+	AuthTokens *auth.TokenSet
+	// Limiter, when non-nil, throttles the ingest routes per client IP. It
+	// runs before auth, so a flood is capped whether or not it carries a
+	// valid token.
+	Limiter *ratelimit.Limiter
+	// MaxDecodes caps concurrent request decodes. Zero or less means no
+	// cap.
+	MaxDecodes int
+	// Forward configures the backend relay. An empty Forward.URL logs
+	// payloads instead of forwarding them.
+	Forward forward.Config
+	// Environment, when its Value is non-empty, adds a processor.Environment.
+	Environment processor.EnvironmentConfig
+	// Namespace, when its Value is non-empty, adds a processor.Namespace.
+	Namespace processor.NamespaceConfig
+	// Redaction, when enabled, adds a processor.Redaction.
+	Redaction processor.RedactionConfig
+}
+
+// registerRoutes wires the ingest handler and health check onto mux as cfg
+// describes. /healthz and /metrics stay open, unauthenticated and
+// unthrottled: the first for liveness and readiness probes, the second for
+// a Prometheus scraper. /metrics exposes only counts.
 //
-// When forwardCfg.URL is non-empty, ingested payloads are relayed to that
-// backend via a forward.ForwardingSink built from forwardCfg, which
-// registerRoutes returns so the caller can Shutdown it on graceful
-// shutdown. An empty URL falls back to logging payloads instead of
-// forwarding them, so local/dev/CI runs keep working with no backend at
-// all; registerRoutes then returns a nil *forward.ForwardingSink. A URL
-// that cannot be used is returned as an error.
+// When cfg.Forward.URL is non-empty, ingested payloads are relayed to that
+// backend by a forward.ForwardingSink. registerRoutes returns it so the
+// caller can shut it down. An empty URL logs payloads instead of
+// forwarding them, so local, development and CI runs work with no backend.
+// registerRoutes then returns a nil *forward.ForwardingSink. A URL that
+// cannot be used is returned as an error.
 //
-// When envCfg.Value is non-empty, a processor.Environment wraps the
-// chosen sink. It writes that environment onto delta batches, manifests
-// and static baselines before the sink sees them. A zero envCfg leaves
-// payloads untouched.
-//
-// When nsCfg.Value is non-empty, a processor.Namespace wraps the sink
-// outside the environment processor. It writes that service namespace
-// onto the same three payloads. A zero nsCfg leaves each agent's
-// namespace as sent.
-//
-// When redactCfg is enabled, a processor.Redaction wraps the sink outside
-// the other processors. It hides string literals and drops unknown
-// fields before any payload is forwarded. A zero redactCfg leaves it out
-// of the chain.
-func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authTokens *auth.TokenSet, limiter *ratelimit.Limiter, forwardCfg forward.Config, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, redactCfg processor.RedactionConfig) (*forward.ForwardingSink, error) {
+// A processor.Environment wraps the chosen sink. It writes the environment
+// onto delta batches, manifests and static baselines before the sink sees
+// them. A processor.Namespace wraps the sink outside it and writes the
+// service namespace onto the same three payloads. A processor.Redaction
+// wraps the sink outside both. It hides string literals and drops unknown
+// fields before any payload is forwarded. A zero config leaves the
+// matching processor out of the chain.
+func registerRoutes(mux *http.ServeMux, cfg routeConfig) (*forward.ForwardingSink, error) {
+	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	var sink ingest.Sink
 	var fwd *forward.ForwardingSink
-	if forwardCfg.URL != "" {
-		forwardCfg.Logger = logger
+	if cfg.Forward.URL != "" {
+		cfg.Forward.Logger = logger
 		var err error
-		fwd, err = forward.NewForwardingSink(forwardCfg)
+		fwd, err = forward.NewForwardingSink(cfg.Forward)
 		if err != nil {
 			return nil, err
 		}
@@ -64,32 +79,32 @@ func registerRoutes(mux *http.ServeMux, logger *slog.Logger, authTokens *auth.To
 		logger.Warn("OTHERLODE_COLLECTOR_FORWARD_URL not set; ingest payloads are only logged, not forwarded")
 		sink = ingest.NewLogSink(logger)
 	}
-	if envCfg.Value != "" {
-		logger.Info("stamping environment on ingested payloads", "environment", envCfg.Value, "action", envCfg.Action)
-		sink = processor.NewEnvironment(sink, envCfg, logger)
+	if cfg.Environment.Value != "" {
+		logger.Info("stamping environment on ingested payloads", "environment", cfg.Environment.Value, "action", cfg.Environment.Action)
+		sink = processor.NewEnvironment(sink, cfg.Environment, logger)
 	}
-	if nsCfg.Value != "" {
-		logger.Info("stamping service namespace on ingested payloads", "namespace", nsCfg.Value, "action", nsCfg.Action)
-		sink = processor.NewNamespace(sink, nsCfg, logger)
+	if cfg.Namespace.Value != "" {
+		logger.Info("stamping service namespace on ingested payloads", "namespace", cfg.Namespace.Value, "action", cfg.Namespace.Action)
+		sink = processor.NewNamespace(sink, cfg.Namespace, logger)
 	}
-	if redactCfg.Enabled() {
+	if cfg.Redaction.Enabled() {
 		logger.Info("redacting string literals in ingested payloads",
-			"blocked_values", len(redactCfg.BlockedValues), "all_literals", redactCfg.AllLiterals)
-		sink = processor.NewRedaction(sink, redactCfg, logger)
+			"blocked_values", len(cfg.Redaction.BlockedValues), "all_literals", cfg.Redaction.AllLiterals)
+		sink = processor.NewRedaction(sink, cfg.Redaction, logger)
 	}
-	handler := ingest.NewHandler(sink, logger)
+	handler := ingest.NewHandler(sink, logger, ingest.WithMaxConcurrentDecodes(cfg.MaxDecodes))
 
 	ingestMux := http.NewServeMux()
 	handler.Register(ingestMux)
 
 	var ingestHandler http.Handler = ingestMux
-	if authTokens != nil {
-		ingestHandler = auth.RequireBearerToken(authTokens, ingestMux)
+	if cfg.AuthTokens != nil {
+		ingestHandler = auth.RequireBearerToken(cfg.AuthTokens, ingestMux)
 	} else {
 		logger.Warn("OTHERLODE_COLLECTOR_AUTH_TOKEN and OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE not set; ingest endpoints are unauthenticated")
 	}
-	if limiter != nil {
-		ingestHandler = limiter.Middleware(ingestHandler)
+	if cfg.Limiter != nil {
+		ingestHandler = cfg.Limiter.Middleware(ingestHandler)
 	} else {
 		logger.Warn("rate limiting disabled; ingest endpoints accept requests unthrottled")
 	}

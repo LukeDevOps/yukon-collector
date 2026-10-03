@@ -23,9 +23,9 @@ const (
 	healthcheckTimeout = 2 * time.Second
 )
 
-// healthcheckClient never uses a proxy. The probe only ever targets the
-// collector in its own container, and an HTTP_PROXY set for forwarding
-// would otherwise capture a probe addressed by hostname or pod IP.
+// healthcheckClient never uses a proxy. The probe targets only the
+// collector in its own container. A proxy set for forwarding could
+// otherwise capture a probe addressed by hostname or pod IP.
 var healthcheckClient = &http.Client{Transport: &http.Transport{Proxy: nil}}
 
 // runSubcommand handles a non-empty argument list and returns the process
@@ -56,8 +56,9 @@ func healthcheckCommand(ctx context.Context, getenv func(string) string) error {
 	return runHealthcheck(ctx, target)
 }
 
-// resolveAddr returns raw (the value of OTHERLODE_COLLECTOR_ADDR), or
-// defaultAddr when raw is empty.
+// resolveAddr returns the address the collector listens on: raw, the value
+// of OTHERLODE_COLLECTOR_ADDR, or defaultAddr when it is empty. The server
+// and the healthcheck both call it, so the probe targets the listener.
 func resolveAddr(raw string) string {
 	if raw == "" {
 		return defaultAddr

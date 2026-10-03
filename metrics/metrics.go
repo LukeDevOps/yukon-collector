@@ -1,7 +1,5 @@
 // Package metrics keeps the collector's counters and serves them in the
-// Prometheus text exposition format. It has no dependency beyond the
-// standard library: the collector needs a handful of counters, not a
-// client library.
+// Prometheus text exposition format. It uses only the standard library.
 package metrics
 
 import (
@@ -30,8 +28,9 @@ var (
 )
 
 // NewCounter registers a counter under name, with labels naming its
-// label dimensions in the order Inc expects them. Names must be unique
-// within the process; a repeat panics, since it is a programming error.
+// label dimensions in the order Add expects them. A counter with no labels
+// shows in the output at 0 from creation, so an increase() alert sees its
+// first event. Names must be unique within the process. A repeat panics.
 func NewCounter(name, help string, labels ...string) *Counter {
 	c := newCounter(name, help, labels...)
 	registryMu.Lock()
@@ -48,16 +47,20 @@ func NewCounter(name, help string, labels ...string) *Counter {
 // newCounter builds a counter without registering it, so tests can
 // exercise one in isolation.
 func newCounter(name, help string, labels ...string) *Counter {
-	return &Counter{name: name, help: help, labels: labels, series: make(map[string]*atomic.Int64)}
+	c := &Counter{name: name, help: help, labels: labels, series: make(map[string]*atomic.Int64)}
+	if len(labels) == 0 {
+		c.get(nil)
+	}
+	return c
 }
 
-// Inc adds one to the series identified by values, which must match the
-// counter's labels in number and order.
+// Inc adds one, as Add does.
 func (c *Counter) Inc(values ...string) {
 	c.Add(1, values...)
 }
 
-// Add adds n to the series identified by values.
+// Add adds n to the series identified by values. Values must match the
+// counter's labels in number and order. Add panics otherwise.
 func (c *Counter) Add(n int64, values ...string) {
 	if len(values) != len(c.labels) {
 		panic(fmt.Sprintf("metrics: counter %s wants %d label values, got %d", c.name, len(c.labels), len(values)))
@@ -65,12 +68,19 @@ func (c *Counter) Add(n int64, values ...string) {
 	c.get(values).Add(n)
 }
 
-// Value returns the current count of the series identified by values.
+// Value returns the count of the series identified by values, or 0 if the
+// series does not exist. It never creates a series. Values must match the
+// counter's labels as in Add.
 func (c *Counter) Value(values ...string) int64 {
 	if len(values) != len(c.labels) {
 		panic(fmt.Sprintf("metrics: counter %s wants %d label values, got %d", c.name, len(c.labels), len(values)))
 	}
-	return c.get(values).Load()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, ok := c.series[strings.Join(values, "\x00")]; ok {
+		return v.Load()
+	}
+	return 0
 }
 
 func (c *Counter) get(values []string) *atomic.Int64 {

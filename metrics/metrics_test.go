@@ -39,6 +39,25 @@ func TestCounter_NoLabels_RendersBareName(t *testing.T) {
 	}
 }
 
+func TestCounter_NoLabels_RendersZeroBeforeFirstIncrement(t *testing.T) {
+	c := newCounter("test_zero_total", "Zero.")
+	if got := renderOne(c); !strings.Contains(got, "test_zero_total 0\n") {
+		t.Fatalf("label-less counter missing at 0:\n%s", got)
+	}
+}
+
+func TestCounter_ValueOfUnseenSeries_DoesNotCreateIt(t *testing.T) {
+	c := newCounter("test_value_total", "Value.", "k")
+	c.Inc("seen")
+	before := renderOne(c)
+	if got := c.Value("unseen"); got != 0 {
+		t.Fatalf("Value of unseen series = %d, want 0", got)
+	}
+	if after := renderOne(c); after != before {
+		t.Fatalf("Value changed the output:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestCounter_EscapesLabelValues(t *testing.T) {
 	c := newCounter("test_escape_total", "Escape.", "v")
 	c.Inc("a\"b\\c\nd")

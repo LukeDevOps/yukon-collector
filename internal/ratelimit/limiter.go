@@ -1,11 +1,13 @@
 // Package ratelimit provides per-client-IP request throttling as HTTP
-// middleware, for use in front of the collector's agent-facing endpoints.
+// middleware for the collector's agent-facing endpoints.
 package ratelimit
 
 import (
+	"container/list"
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,10 +19,21 @@ import (
 )
 
 // defaultStaleAfter is how long a client's bucket is kept with no
-// requests before the cleanup loop evicts it. Idle clients are far more
-// likely than an attacker cycling source IPs to avoid throttling, so this
-// only needs to bound memory growth, not defend against eviction abuse.
+// requests before the cleanup loop evicts it. Eviction frees memory for
+// clients that left. defaultMaxVisitors bounds the map against a flood of
+// new keys.
 const defaultStaleAfter = 10 * time.Minute
+
+// defaultMaxVisitors caps the number of tracked clients. When the map is
+// full, a request from a new client evicts the least recently used client.
+// An evicted client loses only its bucket and gets a fresh full one on its
+// next request. Agents flush every 30 to 60 seconds, so legitimate clients
+// stay near the front of the list. A flood of new keys pushes out idle
+// clients first, and never locks out a new one.
+const defaultMaxVisitors = 100_000
+
+// DefaultIPv6Prefix keys each IPv6 address on its own.
+const DefaultIPv6Prefix = 128
 
 // Limiter throttles requests per client IP using a token bucket per key.
 // The zero value is not usable; construct with New.
@@ -36,13 +49,24 @@ type Limiter struct {
 	// evicted, and the interval the eviction loop runs on.
 	staleAfter time.Duration
 
-	mu       sync.Mutex
-	visitors map[string]*visitor
+	maxVisitors int
 
-	stop chan struct{}
+	// ipv6Prefix is the prefix length, in bits, that an IPv6 address is
+	// reduced to before it is used as a key.
+	ipv6Prefix int
+
+	mu sync.Mutex
+	// visitors maps a key to its element in order. The front of order is
+	// the most recently used client.
+	visitors map[string]*list.Element
+	order    *list.List
+
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 type visitor struct {
+	key      string
 	bucket   *rate.Limiter
 	lastSeen time.Time
 }
@@ -65,10 +89,32 @@ func WithClientIPHeader(name string) Option {
 	return func(l *Limiter) { l.clientIPHeader = name }
 }
 
+// WithIPv6Prefix sets how many leading bits of an IPv6 address form its
+// key. The default is 128, so each address has its own bucket. A smaller
+// value makes every address in the same prefix share one bucket. Use 64
+// when the collector faces the internet directly, since one sender can
+// cycle through the 2^64 addresses of a /64. Keep 128 when many agents
+// share a /64, as VPC subnets and per-node pod ranges often do. Values
+// outside 1 to 128 are ignored. IPv4 and IPv4-mapped addresses always key
+// on the IPv4 address.
+func WithIPv6Prefix(bits int) Option {
+	return func(l *Limiter) {
+		if bits >= 1 && bits <= 128 {
+			l.ipv6Prefix = bits
+		}
+	}
+}
+
 // withStaleAfter overrides the idle eviction time. Tests use it to make
 // eviction observable without waiting ten minutes.
 func withStaleAfter(d time.Duration) Option {
 	return func(l *Limiter) { l.staleAfter = d }
+}
+
+// withMaxVisitors overrides the client cap. Tests use it to reach the cap
+// without creating a hundred thousand clients.
+func withMaxVisitors(n int) Option {
+	return func(l *Limiter) { l.maxVisitors = n }
 }
 
 // New creates a Limiter allowing r requests per second, per client IP, with
@@ -77,11 +123,14 @@ func withStaleAfter(d time.Duration) Option {
 // with it.
 func New(r rate.Limit, burst int, opts ...Option) *Limiter {
 	l := &Limiter{
-		rate:       r,
-		burst:      burst,
-		staleAfter: defaultStaleAfter,
-		visitors:   make(map[string]*visitor),
-		stop:       make(chan struct{}),
+		rate:        r,
+		burst:       burst,
+		staleAfter:  defaultStaleAfter,
+		maxVisitors: defaultMaxVisitors,
+		ipv6Prefix:  DefaultIPv6Prefix,
+		visitors:    make(map[string]*list.Element),
+		order:       list.New(),
+		stop:        make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(l)
@@ -90,9 +139,10 @@ func New(r rate.Limit, burst int, opts ...Option) *Limiter {
 	return l
 }
 
-// Stop ends the background eviction loop.
+// Stop ends the background eviction loop. It is safe to call more than
+// once.
 func (l *Limiter) Stop() {
-	close(l.stop)
+	l.stopOnce.Do(func() { close(l.stop) })
 }
 
 // Middleware wraps next with the rate limit check, keyed on the request's
@@ -112,15 +162,23 @@ func (l *Limiter) Middleware(next http.Handler) http.Handler {
 }
 
 // allow reports whether key may proceed. When it may not, retryAfter is
-// how long until the bucket next has a token.
+// how long until the bucket next has a token. A new key evicts the least
+// recently used client when the map is full.
 func (l *Limiter) allow(key string) (ok bool, retryAfter time.Duration) {
-	now := time.Now()
-
 	l.mu.Lock()
-	v, found := l.visitors[key]
-	if !found {
-		v = &visitor{bucket: rate.NewLimiter(l.rate, l.burst)}
-		l.visitors[key] = v
+	now := time.Now()
+	var v *visitor
+	if el, found := l.visitors[key]; found {
+		v = el.Value.(*visitor)
+		l.order.MoveToFront(el)
+	} else {
+		for len(l.visitors) >= l.maxVisitors && l.order.Len() > 0 {
+			oldest := l.order.Back()
+			delete(l.visitors, oldest.Value.(*visitor).key)
+			l.order.Remove(oldest)
+		}
+		v = &visitor{key: key, bucket: rate.NewLimiter(l.rate, l.burst)}
+		l.visitors[key] = l.order.PushFront(v)
 	}
 	v.lastSeen = now
 	bucket := v.bucket
@@ -157,10 +215,13 @@ func (l *Limiter) evictStaleLoop() {
 			return
 		case now := <-ticker.C:
 			l.mu.Lock()
-			for key, v := range l.visitors {
-				if now.Sub(v.lastSeen) > l.staleAfter {
-					delete(l.visitors, key)
+			for el := l.order.Back(); el != nil; el = l.order.Back() {
+				v := el.Value.(*visitor)
+				if now.Sub(v.lastSeen) <= l.staleAfter {
+					break
 				}
+				delete(l.visitors, v.key)
+				l.order.Remove(el)
 			}
 			l.mu.Unlock()
 		}
@@ -168,15 +229,38 @@ func (l *Limiter) evictStaleLoop() {
 }
 
 // clientIP returns the key to throttle r on. With a client IP header
-// configured and present, that wins; otherwise RemoteAddr with its port
-// stripped, or the raw RemoteAddr if it isn't a host:port pair.
+// configured and present, that wins. Otherwise it is RemoteAddr with its
+// port stripped, or the raw RemoteAddr if it is not a host:port pair. The
+// result goes through normalizeIP.
 func (l *Limiter) clientIP(r *http.Request) string {
 	if l.clientIPHeader != "" {
-		if ip := lastHeaderValue(r.Header.Get(l.clientIPHeader)); ip != "" {
-			return stripPort(ip)
+		// A proxy may add its own header line instead of appending to the
+		// client's, so all lines are joined before taking the last entry.
+		joined := strings.Join(r.Header.Values(l.clientIPHeader), ",")
+		if ip := lastHeaderValue(joined); ip != "" {
+			return l.normalizeIP(stripPort(ip))
 		}
 	}
-	return stripPort(r.RemoteAddr)
+	return l.normalizeIP(stripPort(r.RemoteAddr))
+}
+
+// normalizeIP returns the bucket key for s. IPv4 and IPv4-mapped IPv6
+// addresses key on the IPv4 address. IPv6 addresses key on their first
+// ipv6Prefix bits. A value that is not an IP keys on itself.
+func (l *Limiter) normalizeIP(s string) string {
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return s
+	}
+	addr = addr.WithZone("").Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	prefix, err := addr.Prefix(l.ipv6Prefix)
+	if err != nil {
+		return s
+	}
+	return prefix.String()
 }
 
 // lastHeaderValue returns the last non-empty comma-separated entry of v.

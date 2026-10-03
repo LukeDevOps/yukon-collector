@@ -7,8 +7,8 @@ import (
 	otherlodepb "buf.build/gen/go/otherlode/otherlode/protocolbuffers/go/otherlode/v1"
 )
 
-// LogSink logs every payload instead of storing it. It is a placeholder
-// until a real backend (storage, multi-tenant aggregation) is wired in.
+// LogSink logs each payload's identity and size and stores nothing. The
+// collector uses it when no forward URL is set.
 type LogSink struct {
 	logger *slog.Logger
 }
@@ -22,9 +22,8 @@ func NewLogSink(logger *slog.Logger) *LogSink {
 	return &LogSink{logger: logger}
 }
 
-// AcceptDeltaBatch logs the batch's service identity, run ID,
-// environment, test-run flag, delta count, endpoint delta count, and
-// dependency delta count. It never fails.
+// AcceptDeltaBatch logs the batch's identity and the size of each list
+// it carries. It never fails.
 func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBatch) error {
 	s.logger.Info("received delta batch",
 		"namespace", batch.GetResource().GetServiceNamespace(),
@@ -40,11 +39,8 @@ func (s *LogSink) AcceptDeltaBatch(_ context.Context, batch *otherlodepb.DeltaBa
 	return nil
 }
 
-// AcceptManifest logs the manifest's service identity, run ID,
-// environment, test-run flag, probe counts, call edge and supertype
-// counts, endpoint count, disabled endpoint module count, dependency and
-// reference counts, whether the instance records references, and whether
-// its dependency listing is delivered. It never fails.
+// AcceptManifest logs the manifest's identity and the size of each list
+// it carries. It never fails.
 func (s *LogSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeManifest) error {
 	s.logger.Info("received probe manifest",
 		"namespace", manifest.GetResource().GetServiceNamespace(),
@@ -69,9 +65,8 @@ func (s *LogSink) AcceptManifest(_ context.Context, manifest *otherlodepb.ProbeM
 	return nil
 }
 
-// AcceptStaticBaseline logs the baseline's service identity, run ID,
-// environment, test-run flag, scan identity, chunk position, and class
-// counts. It never fails.
+// AcceptStaticBaseline logs the baseline's identity, its chunk position
+// and the size of each list it carries. It never fails.
 func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.StaticBaseline) error {
 	s.logger.Info("received static baseline",
 		"namespace", baseline.GetResource().GetServiceNamespace(),
@@ -93,7 +88,6 @@ func (s *LogSink) AcceptStaticBaseline(_ context.Context, baseline *otherlodepb.
 	return nil
 }
 
-// callEdgeCount sums the call edges carried by probes.
 func callEdgeCount(probes []*otherlodepb.ProbeLocation) int {
 	n := 0
 	for _, p := range probes {
@@ -102,8 +96,6 @@ func callEdgeCount(probes []*otherlodepb.ProbeLocation) int {
 	return n
 }
 
-// declaredCallEdgeCount sums the call edges carried by every method of
-// every declared class.
 func declaredCallEdgeCount(classes []*otherlodepb.DeclaredClass) int {
 	n := 0
 	for _, c := range classes {
@@ -114,7 +106,6 @@ func declaredCallEdgeCount(classes []*otherlodepb.DeclaredClass) int {
 	return n
 }
 
-// referencedClassCount sums the referenced class names carried by probes.
 func referencedClassCount(probes []*otherlodepb.ProbeLocation) int {
 	n := 0
 	for _, p := range probes {
@@ -123,8 +114,6 @@ func referencedClassCount(probes []*otherlodepb.ProbeLocation) int {
 	return n
 }
 
-// declaredReferencedClassCount sums the referenced class names carried by
-// every declared class and every method of it.
 func declaredReferencedClassCount(classes []*otherlodepb.DeclaredClass) int {
 	n := 0
 	for _, c := range classes {

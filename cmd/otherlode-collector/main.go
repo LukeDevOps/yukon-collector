@@ -17,11 +17,13 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/time/rate"
 
@@ -36,10 +38,10 @@ const (
 	defaultAddr     = ":4319"
 	shutdownTimeout = 10 * time.Second
 
-	// defaultRateLimitRPS and defaultRateLimitBurst size the per-client-IP
-	// token bucket around the agent's flush interval (every 30-60s): a
-	// handful of instances sharing one NAT'd IP should never trip it, but
-	// a request storm still gets capped.
+	// defaultRateLimitRPS and defaultRateLimitBurst set the per-client-IP
+	// token bucket. An agent flushes every 30 to 60 seconds, so several
+	// instances behind one shared address stay far below 5 requests per
+	// second. A request storm from one address is still capped.
 	defaultRateLimitRPS   = 5
 	defaultRateLimitBurst = 20
 
@@ -77,14 +79,25 @@ func main() {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
+	ipv6Prefix, err := resolveIPv6Prefix(os.Getenv("OTHERLODE_COLLECTOR_RATE_LIMIT_IPV6_PREFIX"))
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
 	var limiter *ratelimit.Limiter
 	if rps > 0 {
-		var opts []ratelimit.Option
+		opts := []ratelimit.Option{ratelimit.WithIPv6Prefix(ipv6Prefix)}
 		if header := os.Getenv("OTHERLODE_COLLECTOR_CLIENT_IP_HEADER"); header != "" {
 			opts = append(opts, ratelimit.WithClientIPHeader(header))
 		}
 		limiter = ratelimit.New(rps, burst, opts...)
 		defer limiter.Stop()
+	}
+
+	maxDecodes, err := resolveMaxConcurrentDecodes(os.Getenv)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
 
 	forwardCfg, forwardFile, err := resolveForwardConfig(os.Getenv)
@@ -112,7 +125,16 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	fwd, err := registerRoutes(mux, logger, authTokens, limiter, forwardCfg, envCfg, nsCfg, redactCfg)
+	fwd, err := registerRoutes(mux, routeConfig{
+		Logger:      logger,
+		AuthTokens:  authTokens,
+		Limiter:     limiter,
+		MaxDecodes:  maxDecodes,
+		Forward:     forwardCfg,
+		Environment: envCfg,
+		Namespace:   nsCfg,
+		Redaction:   redactCfg,
+	})
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -254,12 +276,31 @@ func (k *forwardKey) store(tokens []string) {
 	k.key.Store(&tokens[0])
 }
 
-// resolveRateLimit decides the per-client-IP request rate and burst size
-// for the ingest routes, applying defaults for unset env vars. A rate of
-// 0 disables rate limiting entirely (rpsRaw = "0"). Unlike auth, this
-// doesn't fail closed: a misconfigured limit falls back to blocking
-// startup only when the value is present but unparsable, not when it's
-// merely absent.
+// checkHeaderValue returns an error when key holds a control character,
+// which an HTTP header value cannot carry. A request with such a key fails
+// in the HTTP client, and the forwarder would retry it until it gave up.
+func checkHeaderValue(key string) error {
+	for i := 0; i < len(key); i++ {
+		if c := key[i]; c < 0x20 || c == 0x7f {
+			return fmt.Errorf("the key holds a control character at byte %d", i)
+		}
+	}
+	return nil
+}
+
+// checkForwardKeys accepts a key file only when it holds exactly one key
+// that is usable as a header value.
+func checkForwardKeys(tokens []string) error {
+	if err := tokenfile.ExactlyOne(tokens); err != nil {
+		return err
+	}
+	return checkHeaderValue(tokens[0])
+}
+
+// resolveRateLimit returns the per-client-IP rate and burst for the ingest
+// routes. An unset variable takes its default. A rate of 0 turns limiting
+// off. A value that does not parse, a negative or non-finite rate, or a
+// burst below 1 with limiting on is an error.
 func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 	rps := float64(defaultRateLimitRPS)
 	if rpsRaw != "" {
@@ -292,6 +333,23 @@ func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 	return rate.Limit(rps), burst, nil
 }
 
+// resolveIPv6Prefix returns the IPv6 prefix length, in bits, that the rate
+// limiter keys on. An unset variable gives 128, one bucket per address.
+// A value that is not an integer from 1 to 128 is an error.
+func resolveIPv6Prefix(raw string) (int, error) {
+	if raw == "" {
+		return ratelimit.DefaultIPv6Prefix, nil
+	}
+	bits, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("OTHERLODE_COLLECTOR_RATE_LIMIT_IPV6_PREFIX: %w", err)
+	}
+	if bits < 1 || bits > 128 {
+		return 0, errors.New("OTHERLODE_COLLECTOR_RATE_LIMIT_IPV6_PREFIX must be from 1 to 128")
+	}
+	return bits, nil
+}
+
 // resolveForwardConfig reads the forwarding settings from the environment
 // via getenv. Only OTHERLODE_COLLECTOR_FORWARD_URL decides whether
 // forwarding is on; the rest tune it and fall back to the forward package's
@@ -302,14 +360,23 @@ func resolveRateLimit(rpsRaw, burstRaw string) (rate.Limit, int, error) {
 // spaces around it trimmed, or from the file that
 // OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE names, which must hold
 // exactly one token. Setting both is an error, and so is a variable that
-// holds only spaces. For a file, the caller re-reads it through the
-// returned tokenfile.File.
+// holds only spaces. A key with a control character is an error, for a
+// variable and for each read of a file. For a file, the caller re-reads it
+// through the returned tokenfile.File.
+//
+// Setting either key variable without OTHERLODE_COLLECTOR_FORWARD_URL is an
+// error, since the operator meant to forward.
 func resolveForwardConfig(getenv func(string) string) (forward.Config, *tokenfile.File, error) {
 	cfg := forward.Config{URL: getenv("OTHERLODE_COLLECTOR_FORWARD_URL")}
 
 	raw := getenv("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN")
 	token := strings.TrimSpace(raw)
 	path := getenv("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE")
+	if cfg.URL == "" && (raw != "" || path != "") {
+		return forward.Config{}, nil, errors.New(
+			"OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN or OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE is set but OTHERLODE_COLLECTOR_FORWARD_URL is empty; " +
+				"set OTHERLODE_COLLECTOR_FORWARD_URL or unset the key variable")
+	}
 	var file *tokenfile.File
 	switch {
 	case raw != "" && path != "":
@@ -320,11 +387,14 @@ func resolveForwardConfig(getenv func(string) string) (forward.Config, *tokenfil
 	case path != "":
 		key := new(forwardKey)
 		var err error
-		if file, err = tokenfile.Open(path, forwardFileLabel, tokenfile.ExactlyOne, key.store); err != nil {
+		if file, err = tokenfile.Open(path, forwardFileLabel, checkForwardKeys, key.store); err != nil {
 			return forward.Config{}, nil, fmt.Errorf("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE: %w", err)
 		}
 		cfg.AuthToken = key
 	case token != "":
+		if err := checkHeaderValue(token); err != nil {
+			return forward.Config{}, nil, fmt.Errorf("OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN: %w", err)
+		}
 		cfg.AuthToken = forward.StaticToken(token)
 	}
 
@@ -333,6 +403,9 @@ func resolveForwardConfig(getenv func(string) string) (forward.Config, *tokenfil
 		return forward.Config{}, nil, err
 	}
 	if cfg.QueueSize, err = positiveIntEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_QUEUE_SIZE"); err != nil {
+		return forward.Config{}, nil, err
+	}
+	if cfg.QueueBytes, err = positiveIntEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_QUEUE_BYTES"); err != nil {
 		return forward.Config{}, nil, err
 	}
 	if cfg.RequestTimeout, err = positiveDurationEnv(getenv, "OTHERLODE_COLLECTOR_FORWARD_REQUEST_TIMEOUT"); err != nil {
@@ -348,6 +421,21 @@ func resolveForwardConfig(getenv func(string) string) (forward.Config, *tokenfil
 		return forward.Config{}, nil, err
 	}
 	return cfg, file, nil
+}
+
+// resolveMaxConcurrentDecodes returns the cap on concurrent request
+// decodes from OTHERLODE_COLLECTOR_MAX_CONCURRENT_DECODES. It defaults to
+// runtime.GOMAXPROCS(0), because decoding is CPU-bound and more parallel
+// decodes than CPUs add memory but no throughput.
+func resolveMaxConcurrentDecodes(getenv func(string) string) (int, error) {
+	n, err := positiveIntEnv(getenv, "OTHERLODE_COLLECTOR_MAX_CONCURRENT_DECODES")
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return runtime.GOMAXPROCS(0), nil
+	}
+	return n, nil
 }
 
 // positiveIntEnv returns the named variable as an int greater than zero,
@@ -389,9 +477,13 @@ func positiveDurationEnv(getenv func(string) string, name string) (time.Duration
 // OTHERLODE_COLLECTOR_ENVIRONMENT_ACTION. A value that is blank after
 // trimming space turns the processor off. An action with no value is an
 // error: the operator meant to label payloads, and starting without the
-// label would hide that mistake.
+// label would hide that mistake. A value that is not valid UTF-8 is an
+// error, since a payload that carries it cannot be encoded for forwarding.
 func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig, error) {
 	value := strings.TrimSpace(valueRaw)
+	if !utf8.ValidString(value) {
+		return processor.EnvironmentConfig{}, errors.New("OTHERLODE_COLLECTOR_ENVIRONMENT is not valid UTF-8")
+	}
 
 	action, err := processor.ParseAction(actionRaw)
 	if err != nil {
@@ -417,9 +509,14 @@ func resolveEnvironment(valueRaw, actionRaw string) (processor.EnvironmentConfig
 // passes through unchanged. An action with no value is an error: the
 // operator meant to set a namespace, and starting without it would hide
 // that mistake. A value of "." or ".." is an error, since the ingest
-// handler rejects that namespace from an agent too.
+// handler rejects that namespace from an agent too. So is a value that is
+// not valid UTF-8, since a payload that carries it cannot be encoded for
+// forwarding.
 func resolveNamespace(valueRaw, actionRaw string) (processor.NamespaceConfig, error) {
 	value := strings.TrimSpace(valueRaw)
+	if !utf8.ValidString(value) {
+		return processor.NamespaceConfig{}, errors.New("OTHERLODE_COLLECTOR_SERVICE_NAMESPACE is not valid UTF-8")
+	}
 
 	action, err := processor.ParseAction(actionRaw)
 	if err != nil {

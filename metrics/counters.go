@@ -10,7 +10,9 @@ var (
 		"Payloads decoded, validated, and handed to the sink.", "payload")
 
 	// IngestRejected counts requests turned away before or by the sink.
-	// Reasons: content_type, too_large, read, malformed, invalid, sink.
+	// Reasons: content_type, too_large, read, malformed, invalid, sink,
+	// canceled (the request context ended while it waited for a decode
+	// slot), busy (no decode slot came free in time; the answer was 503).
 	IngestRejected = NewCounter("otherlode_collector_ingest_rejected_total",
 		"Requests rejected before or by the sink.", "payload", "reason")
 
@@ -32,7 +34,7 @@ var (
 	ForwardDelivered = NewCounter("otherlode_collector_forward_delivered_total",
 		"Payloads the backend accepted.", "payload")
 
-	// ForwardRetries counts delivery attempts made after a first failure.
+	// ForwardRetries counts delivery attempts made after a retryable failure.
 	ForwardRetries = NewCounter("otherlode_collector_forward_retries_total",
 		"Delivery attempts made after a retryable failure.", "payload")
 

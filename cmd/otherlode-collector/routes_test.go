@@ -27,8 +27,8 @@ import (
 )
 
 // deltaRequest builds a POST to the deltas route carrying the smallest
-// batch the handler accepts: a resource with a service name and instance
-// ID, and no deltas.
+// batch the handler accepts: a resource with a service name, instance ID
+// and run ID, and no deltas.
 func deltaRequest(t *testing.T, serverURL string) *http.Request {
 	t.Helper()
 	body, err := proto.Marshal(&otherlodepb.DeltaBatch{
@@ -66,42 +66,22 @@ func staticBaselineRequest(t *testing.T, serverURL string) *http.Request {
 	return req
 }
 
-// mustRegisterRoutes wires routes for a config the test expects to be
-// valid, with every processor left off.
-func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string) *forward.ForwardingSink {
+func mustRegisterRoutes(t *testing.T, mux *http.ServeMux, cfg routeConfig) *forward.ForwardingSink {
 	t.Helper()
-	return mustRegisterRoutesWithEnv(t, mux, authToken, limiter, forwardURL, forwardAuthToken, processor.EnvironmentConfig{})
-}
-
-// mustRegisterRoutesWithEnv is mustRegisterRoutes with an explicit
-// envCfg, for tests that care how the environment processor behaves.
-func mustRegisterRoutesWithEnv(t *testing.T, mux *http.ServeMux, authToken string, limiter *ratelimit.Limiter, forwardURL, forwardAuthToken string, envCfg processor.EnvironmentConfig) *forward.ForwardingSink {
-	t.Helper()
-	return mustRegisterRoutesWithProcessors(t, mux, forwardURL, envCfg, processor.NamespaceConfig{}, processor.RedactionConfig{}, authToken, limiter, forwardAuthToken)
-}
-
-// mustRegisterRoutesWithProcessors is mustRegisterRoutes with explicit
-// processor configs.
-func mustRegisterRoutesWithProcessors(t *testing.T, mux *http.ServeMux, forwardURL string, envCfg processor.EnvironmentConfig, nsCfg processor.NamespaceConfig, redactCfg processor.RedactionConfig, authToken string, limiter *ratelimit.Limiter, forwardAuthToken string) *forward.ForwardingSink {
-	t.Helper()
-	var tokens *auth.TokenSet
-	if authToken != "" {
-		tokens = auth.NewTokenSet([]string{authToken})
-	}
-	cfg := forward.Config{URL: forwardURL}
-	if forwardAuthToken != "" {
-		cfg.AuthToken = forward.StaticToken(forwardAuthToken)
-	}
-	fwd, err := registerRoutes(mux, nil, tokens, limiter, cfg, envCfg, nsCfg, redactCfg)
+	fwd, err := registerRoutes(mux, cfg)
 	if err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
 	return fwd
 }
 
+func tokenSet(token string) *auth.TokenSet {
+	return auth.NewTokenSet([]string{token})
+}
+
 func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "s3cret", nil, "", "")
+	mustRegisterRoutes(t, mux, routeConfig{AuthTokens: tokenSet("s3cret")})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -131,7 +111,7 @@ func TestRegisterRoutes_AuthTokenSet_RequiresMatchingHeader(t *testing.T) {
 
 func TestRegisterRoutes_AuthTokenSet_StaticBaselineRequiresMatchingHeader(t *testing.T) {
 	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "s3cret", nil, "", "")
+	mustRegisterRoutes(t, mux, routeConfig{AuthTokens: tokenSet("s3cret")})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -159,7 +139,7 @@ func TestRegisterRoutes_AuthTokenSet_StaticBaselineRequiresMatchingHeader(t *tes
 
 func TestRegisterRoutes_Healthz_NeverRequiresAuth(t *testing.T) {
 	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "s3cret", nil, "", "")
+	mustRegisterRoutes(t, mux, routeConfig{AuthTokens: tokenSet("s3cret")})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -187,7 +167,7 @@ func TestRegisterRoutes_LimiterSet_ThrottlesIngestRoutesOverBurst(t *testing.T) 
 	defer limiter.Stop()
 
 	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "", limiter, "", "")
+	mustRegisterRoutes(t, mux, routeConfig{Limiter: limiter})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -209,7 +189,7 @@ func TestRegisterRoutes_LimiterSet_HealthzNeverThrottled(t *testing.T) {
 	defer limiter.Stop()
 
 	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "", limiter, "", "")
+	mustRegisterRoutes(t, mux, routeConfig{Limiter: limiter})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -227,7 +207,7 @@ func TestRegisterRoutes_LimiterSet_HealthzNeverThrottled(t *testing.T) {
 
 func TestRegisterRoutes_NoLimiter_IngestUnthrottled(t *testing.T) {
 	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "", nil, "", "")
+	mustRegisterRoutes(t, mux, routeConfig{})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -242,7 +222,7 @@ func TestRegisterRoutes_NoLimiter_IngestUnthrottled(t *testing.T) {
 
 func TestRegisterRoutes_NoForwardURL_ReturnsNilForwardingSink(t *testing.T) {
 	mux := http.NewServeMux()
-	fwd := mustRegisterRoutes(t, mux, "", nil, "", "")
+	fwd := mustRegisterRoutes(t, mux, routeConfig{})
 	if fwd != nil {
 		t.Fatalf("forwarding sink = %v, want nil when OTHERLODE_COLLECTOR_FORWARD_URL is unset", fwd)
 	}
@@ -255,7 +235,7 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 	defer backend.Close()
 
 	mux := http.NewServeMux()
-	fwd := mustRegisterRoutes(t, mux, "", nil, backend.URL, "backend-secret")
+	fwd := mustRegisterRoutes(t, mux, routeConfig{Forward: forward.Config{URL: backend.URL, AuthToken: forward.StaticToken("backend-secret")}})
 	if fwd == nil {
 		t.Fatal("forwarding sink = nil, want non-nil when OTHERLODE_COLLECTOR_FORWARD_URL is set")
 	}
@@ -273,14 +253,14 @@ func TestRegisterRoutes_ForwardURLSet_ReturnsForwardingSinkAndReachesAcceptedSta
 
 func TestRegisterRoutes_InvalidForwardURL_ReturnsError(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, nil, nil, forward.Config{URL: "not a url"}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err == nil {
+	if _, err := registerRoutes(mux, routeConfig{Forward: forward.Config{URL: "not a url"}}); err == nil {
 		t.Fatal("expected an error for an unusable forward URL, got nil")
 	}
 }
 
 func TestRegisterRoutes_Metrics_CountsAcceptedIngest(t *testing.T) {
 	mux := http.NewServeMux()
-	mustRegisterRoutes(t, mux, "", nil, "", "")
+	mustRegisterRoutes(t, mux, routeConfig{})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -328,7 +308,7 @@ func forwardDelta(t *testing.T, envCfg processor.EnvironmentConfig, nsCfg proces
 	defer backend.Close()
 
 	mux := http.NewServeMux()
-	fwd := mustRegisterRoutesWithProcessors(t, mux, backend.URL, envCfg, nsCfg, processor.RedactionConfig{}, "", nil, "")
+	fwd := mustRegisterRoutes(t, mux, routeConfig{Forward: forward.Config{URL: backend.URL}, Environment: envCfg, Namespace: nsCfg})
 	defer fwd.Shutdown(context.Background())
 
 	server := httptest.NewServer(mux)
@@ -455,7 +435,7 @@ func forwardManifest(t *testing.T, redactCfg processor.RedactionConfig) *otherlo
 	defer backend.Close()
 
 	mux := http.NewServeMux()
-	fwd := mustRegisterRoutesWithProcessors(t, mux, backend.URL, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, redactCfg, "", nil, "")
+	fwd := mustRegisterRoutes(t, mux, routeConfig{Forward: forward.Config{URL: backend.URL}, Redaction: redactCfg})
 	defer fwd.Shutdown(context.Background())
 
 	server := httptest.NewServer(mux)
@@ -519,7 +499,6 @@ func TestRegisterRoutes_RedactionOff_ForwardsManifestWithLiteralAndUnknownFields
 	}
 }
 
-// waitUntil polls cond until it holds or timeout passes.
 func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -573,7 +552,7 @@ func TestRegisterRoutes_TokenList_AnyListedTokenPasses(t *testing.T) {
 		t.Fatalf("resolveAuthTokens: %v", err)
 	}
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, tokens, nil, forward.Config{}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err != nil {
+	if _, err := registerRoutes(mux, routeConfig{AuthTokens: tokens}); err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
 	server := httptest.NewServer(mux)
@@ -598,7 +577,7 @@ func TestRegisterRoutes_AuthTokenFile_ReReadChangesAcceptedTokens(t *testing.T) 
 		t.Fatalf("resolveAuthTokens: %v", err)
 	}
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, tokens, nil, forward.Config{}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err != nil {
+	if _, err := registerRoutes(mux, routeConfig{AuthTokens: tokens}); err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
 	server := httptest.NewServer(mux)
@@ -644,7 +623,7 @@ func TestRegisterRoutes_ForwardTokenFile_NextRequestSendsReloadedKey(t *testing.
 		t.Fatalf("resolveForwardConfig: %v", err)
 	}
 	mux := http.NewServeMux()
-	fwd, err := registerRoutes(mux, nil, nil, nil, cfg, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{})
+	fwd, err := registerRoutes(mux, routeConfig{Forward: cfg})
 	if err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}

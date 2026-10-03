@@ -3,6 +3,7 @@ package forward
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,13 +18,9 @@ import (
 	"github.com/otherlodehq/otherlode-collector/ingest"
 )
 
-// captureSink is an ingest.Sink that records what it receives, standing in
-// for a backend that actually decodes the relayed payload instead of just
-// checking the raw HTTP request the way the httptest fakes above do. Every
-// other test in this package proves ForwardingSink sends the right bytes to
-// the right path; these prove that a real backend's own ingest.Handler
-// decodes those bytes back into the same message the agent-facing Handler
-// started with.
+// captureSink records what it receives. It sits behind a real
+// ingest.Handler, so these tests prove a backend decodes ForwardingSink's
+// output into the message the front Handler started with.
 type captureSink struct {
 	mu           sync.Mutex
 	deltaBatches []*otherlodepb.DeltaBatch
@@ -89,14 +86,13 @@ func (c *captureSink) baselinesSnapshot() []*otherlodepb.StaticBaseline {
 }
 
 // newReferenceBackend stands up a real ingest.Handler, the same one the
-// collector itself runs, in front of a capturing Sink. It speaks the
-// collector's own protobuf-over-HTTP shape well enough to prove
-// ForwardingSink's output is valid input to it, without being a real
-// storage backend.
+// collector runs, in front of a capturing Sink. It is not a storage
+// backend. It shows that ForwardingSink's output is valid input to the
+// collector's own protobuf-over-HTTP surface.
 func newReferenceBackend() (*httptest.Server, *captureSink) {
 	sink := &captureSink{}
 	mux := http.NewServeMux()
-	ingest.NewHandler(sink, discardLogger()).Register(mux)
+	ingest.NewHandler(sink, slog.New(slog.DiscardHandler)).Register(mux)
 	return httptest.NewServer(mux), sink
 }
 
@@ -108,7 +104,7 @@ func newFrontCollector(t *testing.T, backendURL string) *httptest.Server {
 	fwd := mustNewSink(t, testConfig(backendURL))
 	t.Cleanup(func() { fwd.Shutdown(t.Context()) })
 	mux := http.NewServeMux()
-	ingest.NewHandler(fwd, discardLogger()).Register(mux)
+	ingest.NewHandler(fwd, slog.New(slog.DiscardHandler)).Register(mux)
 	return httptest.NewServer(mux)
 }
 
@@ -319,7 +315,7 @@ func TestIntegration_QueueFull_RefusesWithServiceUnavailable(t *testing.T) {
 	cfg := testConfig(backend.URL)
 	cfg.Shards = 1
 	cfg.QueueSize = 1
-	cfg.RequestTimeout = time.Hour // don't let the timeout unblock the worker under test
+	cfg.RequestTimeout = time.Hour // keep the timeout from unblocking the worker under test
 	fwd := mustNewSink(t, cfg)
 	t.Cleanup(func() {
 		close(blockBackend) // unblock the handler before Shutdown waits on the worker
@@ -329,7 +325,7 @@ func TestIntegration_QueueFull_RefusesWithServiceUnavailable(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	ingest.NewHandler(fwd, discardLogger()).Register(mux)
+	ingest.NewHandler(fwd, slog.New(slog.DiscardHandler)).Register(mux)
 	front := httptest.NewServer(mux)
 	t.Cleanup(front.Close)
 
@@ -354,23 +350,23 @@ func TestIntegration_QueueFull_RefusesWithServiceUnavailable(t *testing.T) {
 		t.Fatalf("first post status = %d, want %d", resp1.StatusCode, http.StatusAccepted)
 	}
 
-	// Wait for the worker to have actually pulled svc-1 off the queue
-	// before posting more: otherwise svc-2 could be the one that finds
-	// the queue full instead of svc-3.
+	// Wait for the worker to pull svc-1 off the queue before posting more.
+	// Otherwise svc-2 could be the one that finds the queue full instead
+	// of svc-3.
 	select {
 	case <-backendReceivedFirst:
 	case <-time.After(time.Second):
 		t.Fatal("backend never received the first request")
 	}
 
-	// svc-2 fills the now-empty queue.
+	// svc-2 fills the empty queue.
 	resp2 := post("svc-2")
 	resp2.Body.Close()
 	if resp2.StatusCode != http.StatusAccepted {
 		t.Fatalf("second post status = %d, want %d", resp2.StatusCode, http.StatusAccepted)
 	}
 
-	// svc-3 finds the queue full and must be refused, not acknowledged.
+	// svc-3 finds the queue full and must be refused.
 	resp3 := post("svc-3")
 	resp3.Body.Close()
 	if resp3.StatusCode != http.StatusServiceUnavailable {

@@ -1,6 +1,6 @@
-// Package processor holds processors. A processor is an ingest.Sink that
-// wraps another ingest.Sink. It changes or inspects a decoded payload,
-// then passes it on, as a processor does in an OTel Collector pipeline.
+// Package processor holds sinks that wrap another ingest.Sink. Each one
+// changes or inspects a decoded payload, then passes it on, as an OTel
+// Collector processor does.
 package processor
 
 import (

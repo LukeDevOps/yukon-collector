@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -851,30 +852,131 @@ func TestHandler_SinkError_Returns503AndIncrementsRejected(t *testing.T) {
 
 func TestHandler_PassesRequestContextToSink(t *testing.T) {
 	const key ctxKey = "test-key"
-	sink := ctxCheckSink{t: t, key: key, calls: &atomic.Int32{}}
-	mux := http.NewServeMux()
-	NewHandler(sink, nil).Register(mux)
+	res := &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
 
-	batch := &otherlodepb.DeltaBatch{
-		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	cases := []struct {
+		name string
+		path string
+		msg  proto.Message
+	}{
+		{"delta batch", DeltaBatchPath, &otherlodepb.DeltaBatch{Resource: res}},
+		{"manifest", ManifestPath, &otherlodepb.ProbeManifest{Resource: res}},
+		{"static baseline", StaticBaselinePath, &otherlodepb.StaticBaseline{Resource: res, ScannedAt: 1700000000, ChunkCount: 1}},
 	}
-	body, err := proto.Marshal(batch)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sink := ctxCheckSink{t: t, key: key, calls: &atomic.Int32{}}
+			mux := http.NewServeMux()
+			NewHandler(sink, nil).Register(mux)
+
+			body, err := proto.Marshal(c.msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, c.path, strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/x-protobuf")
+			req = req.WithContext(context.WithValue(req.Context(), key, "request-scoped"))
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+			}
+			if got := sink.calls.Load(); got != 1 {
+				t.Fatalf("sink received %d payloads, want 1", got)
+			}
+		})
+	}
+}
+
+func TestHandler_RejectedRequests_CountedByReason(t *testing.T) {
+	server := newTestServer(&fakeSink{})
+	defer server.Close()
+
+	routes := []struct{ name, path, label string }{
+		{"delta batch", DeltaBatchPath, "deltas"},
+		{"manifest", ManifestPath, "manifest"},
+		{"static baseline", StaticBaselinePath, "static_baseline"},
+	}
+	// An empty message has no resource, so it fails validation on every route.
+	empty, err := proto.Marshal(&otherlodepb.DeltaBatch{})
 	if err != nil {
-		t.Fatalf("marshal batch: %v", err)
+		t.Fatalf("marshal: %v", err)
+	}
+	reasons := []struct {
+		name        string
+		reason      string
+		status      int
+		contentType string
+		encodings   []string
+		body        string
+	}{
+		{"wrong content type", "content_type", http.StatusUnsupportedMediaType, "application/json", nil, string(empty)},
+		{"gzip content encoding", "content_type", http.StatusUnsupportedMediaType, "application/x-protobuf", []string{"gzip"}, string(empty)},
+		{"identity then gzip on two lines", "content_type", http.StatusUnsupportedMediaType, "application/x-protobuf", []string{"identity", "gzip"}, string(empty)},
+		{"body too large", "too_large", http.StatusRequestEntityTooLarge, "application/x-protobuf", nil, strings.Repeat("x", maxBodyBytes+1)},
+		{"malformed body", "malformed", http.StatusBadRequest, "application/x-protobuf", nil, "not a protobuf message"},
+		{"missing resource", "invalid", http.StatusBadRequest, "application/x-protobuf", nil, string(empty)},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, DeltaBatchPath, strings.NewReader(string(body)))
+	for _, route := range routes {
+		for _, c := range reasons {
+			t.Run(route.name+"/"+c.name, func(t *testing.T) {
+				before := metrics.IngestRejected.Value(route.label, c.reason)
+				acceptedBefore := metrics.IngestAccepted.Value(route.label)
+
+				req, err := http.NewRequest(http.MethodPost, server.URL+route.path, strings.NewReader(c.body))
+				if err != nil {
+					t.Fatalf("new request: %v", err)
+				}
+				req.Header.Set("Content-Type", c.contentType)
+				for _, enc := range c.encodings {
+					req.Header.Add("Content-Encoding", enc)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatalf("post: %v", err)
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode != c.status {
+					t.Fatalf("status = %d, want %d", resp.StatusCode, c.status)
+				}
+				if got := metrics.IngestRejected.Value(route.label, c.reason); got != before+1 {
+					t.Errorf("IngestRejected(%q, %q) = %d, want %d", route.label, c.reason, got, before+1)
+				}
+				if got := metrics.IngestAccepted.Value(route.label); got != acceptedBefore {
+					t.Errorf("IngestAccepted(%q) = %d, want unchanged at %d", route.label, got, acceptedBefore)
+				}
+			})
+		}
+	}
+}
+
+func TestHandler_IdentityContentEncoding_Accepted(t *testing.T) {
+	sink := &fakeSink{}
+	server := newTestServer(sink)
+	defer server.Close()
+
+	body, err := proto.Marshal(&otherlodepb.DeltaBatch{Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, server.URL+DeltaBatchPath, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
 	req.Header.Set("Content-Type", "application/x-protobuf")
-	req = req.WithContext(context.WithValue(req.Context(), key, "request-scoped"))
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	req.Header.Set("Content-Encoding", "identity")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
 	}
-	if got := sink.calls.Load(); got != 1 {
-		t.Fatalf("sink received %d payloads, want 1", got)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
 	}
 }
 
@@ -883,9 +985,194 @@ func TestPayloadLabel(t *testing.T) {
 		DeltaBatchPath:     "deltas",
 		ManifestPath:       "manifest",
 		StaticBaselinePath: "static_baseline",
+		"/unknown":         "deltas",
 	} {
 		if got := PayloadLabel(path); got != want {
 			t.Errorf("PayloadLabel(%q) = %q, want %q", path, got, want)
 		}
+	}
+}
+
+// gateSink holds every manifest in AcceptManifest until the test lets it
+// go. It records how many calls started and the most that ran at once.
+type gateSink struct {
+	fakeSink
+	entered chan struct{}
+	gate    chan struct{}
+	active  atomic.Int32
+	maxSeen atomic.Int32
+	calls   atomic.Int32
+}
+
+func newGateSink() *gateSink {
+	return &gateSink{entered: make(chan struct{}, 16), gate: make(chan struct{})}
+}
+
+func (g *gateSink) AcceptManifest(context.Context, *otherlodepb.ProbeManifest) error {
+	g.calls.Add(1)
+	n := g.active.Add(1)
+	for {
+		m := g.maxSeen.Load()
+		if n <= m || g.maxSeen.CompareAndSwap(m, n) {
+			break
+		}
+	}
+	g.entered <- struct{}{}
+	<-g.gate
+	g.active.Add(-1)
+	return nil
+}
+
+func manifestRequest(ctx context.Context, t *testing.T) *http.Request {
+	t.Helper()
+	body, err := proto.Marshal(&otherlodepb.ProbeManifest{
+		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, ManifestPath, strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", contentType)
+	return req
+}
+
+// serveWithin runs mux.ServeHTTP in a goroutine and fails the test if it
+// does not return within five seconds.
+func serveWithin(t *testing.T, mux *http.ServeMux, rec *httptest.ResponseRecorder, req *http.Request) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(rec, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not return")
+	}
+}
+
+func TestHandler_MaxConcurrentDecodes_SecondRequestWaitsForFirst(t *testing.T) {
+	sink := newGateSink()
+	mux := http.NewServeMux()
+	NewHandler(sink, nil, WithMaxConcurrentDecodes(1)).Register(mux)
+
+	recorders := []*httptest.ResponseRecorder{httptest.NewRecorder(), httptest.NewRecorder()}
+	done := make(chan struct{}, 2)
+	serve := func(rec *httptest.ResponseRecorder) {
+		mux.ServeHTTP(rec, manifestRequest(context.Background(), t))
+		done <- struct{}{}
+	}
+
+	go serve(recorders[0])
+	<-sink.entered
+	go serve(recorders[1])
+
+	select {
+	case <-sink.entered:
+		t.Fatal("second request reached the sink while the first held the only slot")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := sink.calls.Load(); got != 1 {
+		t.Fatalf("sink calls while the first request holds the slot = %d, want 1", got)
+	}
+
+	sink.gate <- struct{}{}
+	<-sink.entered
+	sink.gate <- struct{}{}
+	<-done
+	<-done
+
+	if got := sink.maxSeen.Load(); got != 1 {
+		t.Errorf("most concurrent sink calls = %d, want 1", got)
+	}
+	for i, rec := range recorders {
+		if rec.Code != http.StatusAccepted {
+			t.Errorf("request %d status = %d, want %d", i, rec.Code, http.StatusAccepted)
+		}
+	}
+}
+
+func TestHandler_MaxConcurrentDecodes_CanceledWaiterCountedAndSkipsSink(t *testing.T) {
+	sink := newGateSink()
+	mux := http.NewServeMux()
+	NewHandler(sink, nil, WithMaxConcurrentDecodes(1)).Register(mux)
+
+	first := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(httptest.NewRecorder(), manifestRequest(context.Background(), t))
+		close(first)
+	}()
+	<-sink.entered
+
+	before := metrics.IngestRejected.Value("manifest", "canceled")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	serveWithin(t, mux, rec, manifestRequest(ctx, t))
+
+	if got := metrics.IngestRejected.Value("manifest", "canceled"); got != before+1 {
+		t.Errorf("IngestRejected(manifest, canceled) = %d, want %d", got, before+1)
+	}
+	if rec.Body.Len() != 0 || rec.Flushed || len(rec.Header()) != 0 {
+		t.Errorf("canceled request wrote a response: body %q, headers %v", rec.Body.String(), rec.Header())
+	}
+	if got := sink.calls.Load(); got != 1 {
+		t.Errorf("sink calls = %d, want 1 (the canceled request must not reach it)", got)
+	}
+
+	sink.gate <- struct{}{}
+	<-first
+}
+
+func TestHandler_MaxConcurrentDecodes_BusyWaiterAnswers503AfterSlotWait(t *testing.T) {
+	sink := newGateSink()
+	mux := http.NewServeMux()
+	h := NewHandler(sink, nil, WithMaxConcurrentDecodes(1))
+	h.slotWait = 50 * time.Millisecond
+	h.Register(mux)
+
+	first := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(httptest.NewRecorder(), manifestRequest(context.Background(), t))
+		close(first)
+	}()
+	<-sink.entered
+
+	before := metrics.IngestRejected.Value("manifest", "busy")
+	rec := httptest.NewRecorder()
+	serveWithin(t, mux, rec, manifestRequest(context.Background(), t))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After = %q, want %q", got, "1")
+	}
+	if got := metrics.IngestRejected.Value("manifest", "busy"); got != before+1 {
+		t.Errorf("IngestRejected(manifest, busy) = %d, want %d", got, before+1)
+	}
+	if got := sink.calls.Load(); got != 1 {
+		t.Errorf("sink calls = %d, want 1 (the busy request must not reach it)", got)
+	}
+
+	sink.gate <- struct{}{}
+	<-first
+}
+
+func TestHandler_MaxConcurrentDecodes_SlotFreedAfterRejection(t *testing.T) {
+	sink := newGateSink()
+	close(sink.gate)
+	mux := http.NewServeMux()
+	NewHandler(sink, nil, WithMaxConcurrentDecodes(1)).Register(mux)
+
+	bad := httptest.NewRequest(http.MethodPost, ManifestPath, strings.NewReader("\xff\xff"))
+	bad.Header.Set("Content-Type", contentType)
+	serveWithin(t, mux, httptest.NewRecorder(), bad)
+
+	rec := httptest.NewRecorder()
+	serveWithin(t, mux, rec, manifestRequest(context.Background(), t))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status after a malformed request = %d, want %d", rec.Code, http.StatusAccepted)
 	}
 }

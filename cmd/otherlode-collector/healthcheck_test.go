@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/otherlodehq/otherlode-collector/internal/auth"
-	"github.com/otherlodehq/otherlode-collector/internal/forward"
-	"github.com/otherlodehq/otherlode-collector/internal/processor"
 )
 
 func TestResolveAddr(t *testing.T) {
@@ -208,7 +206,7 @@ func TestRunHealthcheck_Unreachable_Errors(t *testing.T) {
 // subcommand and the /healthz route cannot drift apart.
 func TestRunHealthcheck_AgainstRegisteredRoutes(t *testing.T) {
 	mux := http.NewServeMux()
-	if _, err := registerRoutes(mux, nil, auth.NewTokenSet([]string{"token"}), nil, forward.Config{}, processor.EnvironmentConfig{}, processor.NamespaceConfig{}, processor.RedactionConfig{}); err != nil {
+	if _, err := registerRoutes(mux, routeConfig{AuthTokens: auth.NewTokenSet([]string{"token"})}); err != nil {
 		t.Fatalf("registerRoutes: %v", err)
 	}
 	srv := httptest.NewServer(mux)

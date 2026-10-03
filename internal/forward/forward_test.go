@@ -22,25 +22,15 @@ import (
 	"github.com/otherlodehq/otherlode-collector/metrics"
 )
 
-// discardLogger keeps test output free of expected Warn lines (queue-full,
-// permanent-failure, retry-exhausted) that these tests deliberately trigger.
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(nopWriter{}, nil))
-}
-
-type nopWriter struct{}
-
-func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }
-
-// testConfig returns a Config tuned for fast, deterministic tests: small
-// timeouts and retry budgets instead of the multi-second production
-// defaults.
+// testConfig returns a Config with small timeouts and retry budgets, in
+// place of the multi-second production defaults. Its logger discards the
+// Warn lines these tests trigger on purpose.
 func testConfig(url string) Config {
 	return Config{
 		URL:                  url,
 		Shards:               1,
 		QueueSize:            8,
-		Logger:               discardLogger(),
+		Logger:               slog.New(slog.DiscardHandler),
 		RequestTimeout:       200 * time.Millisecond,
 		RetryInitialInterval: 5 * time.Millisecond,
 		RetryMaxInterval:     20 * time.Millisecond,
@@ -76,6 +66,27 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	}
 }
 
+// droppedReasons lists every reason the sink counts in ForwardDropped. It
+// is built from dropReasons, so a new reason is counted without an edit
+// here.
+var droppedReasons = func() []string {
+	reasons := []string{"marshal"}
+	for reason := range dropReasons {
+		reasons = append(reasons, reason)
+	}
+	return reasons
+}()
+
+// droppedTotal sums ForwardDropped for payload over every reason the sink
+// writes.
+func droppedTotal(payload string) int64 {
+	var total int64
+	for _, reason := range droppedReasons {
+		total += metrics.ForwardDropped.Value(payload, reason)
+	}
+	return total
+}
+
 func TestForwardingSink_Manifest_RelayedToBackendPath(t *testing.T) {
 	var gotPath, gotContentType, gotAuth string
 	var gotBody []byte
@@ -96,7 +107,9 @@ func TestForwardingSink_Manifest_RelayedToBackendPath(t *testing.T) {
 	sink := mustNewSink(t, cfg)
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("demo-service")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 
 	waitFor(t, time.Second, received.Load)
 
@@ -133,9 +146,11 @@ func TestForwardingSink_DeltaBatch_RelayedToBackendPath(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{
+	if err := sink.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{
 		Resource: &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"},
-	})
+	}); err != nil {
+		t.Fatalf("AcceptDeltaBatch: %v", err)
+	}
 
 	waitFor(t, time.Second, received.Load)
 	if gotPath != ingest.DeltaBatchPath {
@@ -166,7 +181,9 @@ func TestForwardingSink_StaticBaseline_RelayedToBackendPath(t *testing.T) {
 		ChunkIndex: 1,
 		ChunkCount: 2,
 	}
-	sink.AcceptStaticBaseline(context.Background(), sent)
+	if err := sink.AcceptStaticBaseline(context.Background(), sent); err != nil {
+		t.Fatalf("AcceptStaticBaseline: %v", err)
+	}
 
 	waitFor(t, time.Second, received.Load)
 	if gotPath != ingest.StaticBaselinePath {
@@ -187,6 +204,7 @@ func TestForwardingSink_StaticBaseline_RelayedToBackendPath(t *testing.T) {
 
 func TestForwardingSink_RetryableStatus_RetriesThenSucceeds(t *testing.T) {
 	var attempts atomic.Int32
+	deliveredBefore := metrics.ForwardDelivered.Value("manifest")
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if attempts.Add(1) <= 2 {
@@ -200,11 +218,11 @@ func TestForwardingSink_RetryableStatus_RetriesThenSucceeds(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("demo-service")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 
-	waitFor(t, time.Second, func() bool { return attempts.Load() == 3 })
-	// Give a moment to confirm no further attempts happen after success.
-	time.Sleep(30 * time.Millisecond)
+	waitFor(t, time.Second, func() bool { return metrics.ForwardDelivered.Value("manifest") == deliveredBefore+1 })
 	if got := attempts.Load(); got != 3 {
 		t.Fatalf("attempts = %d, want exactly 3", got)
 	}
@@ -212,6 +230,7 @@ func TestForwardingSink_RetryableStatus_RetriesThenSucceeds(t *testing.T) {
 
 func TestForwardingSink_PermanentStatus_DroppedWithoutRetry(t *testing.T) {
 	var attempts atomic.Int32
+	droppedBefore := metrics.ForwardDropped.Value("manifest", "permanent")
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -222,10 +241,11 @@ func TestForwardingSink_PermanentStatus_DroppedWithoutRetry(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("demo-service")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 
-	waitFor(t, time.Second, func() bool { return attempts.Load() == 1 })
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, func() bool { return metrics.ForwardDropped.Value("manifest", "permanent") == droppedBefore+1 })
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("attempts = %d, want exactly 1 (a plain 500 must not be retried)", got)
 	}
@@ -233,6 +253,7 @@ func TestForwardingSink_PermanentStatus_DroppedWithoutRetry(t *testing.T) {
 
 func TestForwardingSink_RetryBudgetExhausted_StopsRetrying(t *testing.T) {
 	var attempts atomic.Int32
+	droppedBefore := metrics.ForwardDropped.Value("manifest", "retry_exhausted")
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -243,19 +264,15 @@ func TestForwardingSink_RetryBudgetExhausted_StopsRetrying(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
-
-	// RetryMaxElapsedTime is 200ms with a 5ms initial interval: the retry
-	// loop gives up well within a second. Confirm it stops growing after
-	// that, rather than retrying forever.
-	time.Sleep(400 * time.Millisecond)
-	stalled := attempts.Load()
-	time.Sleep(100 * time.Millisecond)
-	if got := attempts.Load(); got != stalled {
-		t.Fatalf("attempts grew from %d to %d after the retry budget should have been spent", stalled, got)
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("demo-service")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
 	}
-	if stalled < 2 {
-		t.Fatalf("attempts = %d, want at least 2 (budget should allow more than one try)", stalled)
+
+	// RetryMaxElapsedTime is 200ms with a 5ms initial interval, so the
+	// sink gives up well within the wait below.
+	waitFor(t, 2*time.Second, func() bool { return metrics.ForwardDropped.Value("manifest", "retry_exhausted") == droppedBefore+1 })
+	if got := attempts.Load(); got < 2 {
+		t.Fatalf("attempts = %d, want at least 2 (the budget allows more than one try)", got)
 	}
 }
 
@@ -276,7 +293,7 @@ func TestForwardingSink_QueueFull_RefusesNewestWithoutBlocking(t *testing.T) {
 
 	cfg := testConfig(backend.URL)
 	cfg.QueueSize = 1
-	cfg.RequestTimeout = time.Hour // don't let the timeout unblock the worker under test
+	cfg.RequestTimeout = time.Hour // keep the timeout from unblocking the worker under test
 	sink := mustNewSink(t, cfg)
 	t.Cleanup(func() {
 		close(blockBackend) // unblock the handler before Shutdown waits on the worker
@@ -286,7 +303,7 @@ func TestForwardingSink_QueueFull_RefusesNewestWithoutBlocking(t *testing.T) {
 	})
 
 	refusedBefore := metrics.ForwardRefused.Value("manifest", "queue_full")
-	droppedBefore := metrics.ForwardDropped.Value("manifest", "queue_full")
+	droppedBefore := droppedTotal("manifest")
 
 	// Same key -> same shard -> same queue: item 1 gets picked up by the
 	// single worker (which then blocks in the handler above), item 2 fills
@@ -326,8 +343,8 @@ func TestForwardingSink_QueueFull_RefusesNewestWithoutBlocking(t *testing.T) {
 	if got := metrics.ForwardRefused.Value("manifest", "queue_full"); got != refusedBefore+1 {
 		t.Fatalf("refused count = %d, want %d", got, refusedBefore+1)
 	}
-	if got := metrics.ForwardDropped.Value("manifest", "queue_full"); got != droppedBefore {
-		t.Fatalf("dropped count = %d, want unchanged at %d", got, droppedBefore)
+	if got := droppedTotal("manifest"); got != droppedBefore {
+		t.Fatalf("dropped count = %d, want unchanged at %d (a refused payload is not a drop)", got, droppedBefore)
 	}
 }
 
@@ -414,8 +431,12 @@ func TestForwardingSink_DifferentShards_OneStuckDoesNotBlockAnother(t *testing.T
 		sink.Shutdown(ctx)
 	})
 
-	sink.AcceptManifest(context.Background(), manifestWithService(keyA))
-	sink.AcceptManifest(context.Background(), manifestWithService(keyB))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService(keyA)); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
+	if err := sink.AcceptManifest(context.Background(), manifestWithService(keyB)); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 
 	waitFor(t, time.Second, bReceived.Load)
 }
@@ -437,17 +458,18 @@ func TestForwardingSink_Shutdown_DrainsQueueWithOneAttemptEach(t *testing.T) {
 	cfg.RetryMaxElapsedTime = time.Hour // would retry effectively forever if not for Shutdown
 	sink := mustNewSink(t, cfg)
 
-	sink.AcceptManifest(context.Background(), manifestWithService("svc-1")) // picked up by the worker, blocks in the handler
+	// The worker picks svc-1 up and blocks in the handler.
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc-1")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	waitFor(t, time.Second, func() bool { return attempts.Load() == 1 })
-	sink.AcceptManifest(context.Background(), manifestWithService("svc-2")) // sits queued behind it
-	sink.AcceptManifest(context.Background(), manifestWithService("svc-3")) // sits queued behind it
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		close(release) // let the in-flight request return its 503
-	}()
+	// svc-2 and svc-3 sit queued behind it.
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc-2")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc-3")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -457,12 +479,20 @@ func TestForwardingSink_Shutdown_DrainsQueueWithOneAttemptEach(t *testing.T) {
 		close(shutdownDone)
 	}()
 
+	// Release the in-flight request only after Shutdown has started.
+	// Otherwise svc-1 could retry before the sink stops and add attempts.
+	select {
+	case <-sink.stopping:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown never started")
+	}
+	close(release)
+
 	select {
 	case <-shutdownDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Shutdown did not return promptly; it may have run the full retry sequence per item")
 	}
-	wg.Wait()
 
 	// svc-1's in-flight attempt (already running when Shutdown was
 	// called) comes back retryable, so it gets one final attempt of its
@@ -471,6 +501,93 @@ func TestForwardingSink_Shutdown_DrainsQueueWithOneAttemptEach(t *testing.T) {
 	// multi-attempt retry sequence for any of them.
 	if got := attempts.Load(); got != 4 {
 		t.Fatalf("attempts = %d, want exactly 4 (svc-1's initial and final attempt, one each for svc-2 and svc-3, no retries during drain)", got)
+	}
+}
+
+// TestForwardingSink_Shutdown_DrainsShardsInParallel holds one item per
+// shard in the queue. The backend answers each drain request only once it
+// has a drain request from both shards in flight at the same time. A serial
+// drain never reaches that state, so its items time out and fail.
+func TestForwardingSink_Shutdown_DrainsShardsInParallel(t *testing.T) {
+	const numShards = 4
+	svcA, svcB := findKeysInDifferentShards(t, numShards)
+
+	release := make(chan struct{})
+	var seen sync.Map
+	var drainInFlight atomic.Int32
+	var barrierTimedOut atomic.Bool
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var manifest otherlodepb.ProbeManifest
+		body, _ := io.ReadAll(r.Body)
+		_ = proto.Unmarshal(body, &manifest)
+		if _, again := seen.LoadOrStore(manifest.GetResource().GetServiceName(), true); !again {
+			<-release
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		drainInFlight.Add(1)
+		deadline := time.Now().Add(2 * time.Second)
+		for drainInFlight.Load() < 2 {
+			if time.Now().After(deadline) {
+				barrierTimedOut.Store(true)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	cfg := testConfig(backend.URL)
+	cfg.Shards = numShards
+	cfg.RequestTimeout = 5 * time.Second
+	sink := mustNewSink(t, cfg)
+	deliveredBefore := metrics.ForwardDelivered.Value("manifest")
+
+	// The first item per shard is held by its worker, blocked in the
+	// backend. The second item per shard waits in the queue.
+	for _, svc := range []string{svcA, svcB} {
+		if err := sink.AcceptManifest(context.Background(), manifestWithService(svc)); err != nil {
+			t.Fatalf("AcceptManifest %s: %v", svc, err)
+		}
+	}
+	waitFor(t, time.Second, func() bool {
+		_, a := seen.Load(svcA)
+		_, b := seen.Load(svcB)
+		return a && b
+	})
+	for _, svc := range []string{svcA, svcB} {
+		if err := sink.AcceptManifest(context.Background(), manifestWithService(svc)); err != nil {
+			t.Fatalf("AcceptManifest %s: %v", svc, err)
+		}
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		sink.Shutdown(ctx)
+		close(shutdownDone)
+	}()
+	select {
+	case <-sink.stopping:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown never started")
+	}
+	close(release)
+	select {
+	case <-shutdownDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return")
+	}
+
+	if barrierTimedOut.Load() {
+		t.Fatal("drain requests for two shards were never in flight together, so the drain is serial")
+	}
+	if got := metrics.ForwardDelivered.Value("manifest"); got != deliveredBefore+4 {
+		t.Fatalf("delivered count = %d, want %d", got, deliveredBefore+4)
 	}
 }
 
@@ -517,7 +634,9 @@ func TestForwardingSink_Shutdown_CancelsInFlightAttemptAtDeadline(t *testing.T) 
 	cfg.RequestTimeout = time.Hour // only the shutdown deadline may end the attempt
 	sink := mustNewSink(t, cfg)
 
-	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	select {
 	case <-handlerEntered:
 	case <-time.After(time.Second):
@@ -534,6 +653,48 @@ func TestForwardingSink_Shutdown_CancelsInFlightAttemptAtDeadline(t *testing.T) 
 	waitFor(t, time.Second, cancelled.Load)
 }
 
+func TestForwardingSink_Redirect_IsPermanentFailure(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	var attempts atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer backend.Close()
+
+	var logs bytes.Buffer
+	cfg := testConfig(backend.URL)
+	cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	sink := mustNewSink(t, cfg)
+	defer sink.Shutdown(context.Background())
+	deliveredBefore := metrics.ForwardDelivered.Value("manifest")
+	droppedBefore := metrics.ForwardDropped.Value("manifest", "permanent")
+
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
+	waitFor(t, time.Second, func() bool { return metrics.ForwardDropped.Value("manifest", "permanent") == droppedBefore+1 })
+
+	if got := targetHits.Load(); got != 0 {
+		t.Fatalf("redirect target received %d requests, want 0", got)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want exactly 1 (a redirect must not be retried)", got)
+	}
+	if got := metrics.ForwardDelivered.Value("manifest"); got != deliveredBefore {
+		t.Fatalf("delivered count = %d, want unchanged at %d", got, deliveredBefore)
+	}
+	if !strings.Contains(logs.String(), "backend returned 302 Found") {
+		t.Fatalf("drop log does not name the 302:\n%s", logs.String())
+	}
+}
+
 func TestForwardingSink_Shutdown_SecondCallIsANoOp(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -546,10 +707,46 @@ func TestForwardingSink_Shutdown_SecondCallIsANoOp(t *testing.T) {
 }
 
 func TestNewForwardingSink_InvalidURL_ReturnsError(t *testing.T) {
-	for _, raw := range []string{"", "backend.example.com", "ftp://backend.example.com", "http://", "://bad"} {
+	for _, raw := range invalidURLs {
 		cfg := testConfig(raw)
 		if _, err := NewForwardingSink(cfg); err == nil {
 			t.Errorf("URL %q: expected an error, got nil", raw)
+		}
+	}
+}
+
+var invalidURLs = []string{
+	"", "backend.example.com", "ftp://backend.example.com", "http://", "://bad",
+	"https://h/base?x=1", "https://h/base?", "https://h/base#frag", "https://h/base#",
+	"https://user:pass@h", "https://user@h/base",
+}
+
+func TestValidateURL(t *testing.T) {
+	for _, raw := range invalidURLs {
+		if _, _, err := validateURL(raw); err == nil {
+			t.Errorf("validateURL(%q): expected an error, got nil", raw)
+		}
+	}
+
+	valid := []struct {
+		raw        string
+		wantBase   string
+		wantScheme string
+	}{
+		{"https://h", "https://h", "https"},
+		{"https://h/base", "https://h/base", "https"},
+		{"https://h/base//", "https://h/base", "https"},
+		{"http://h:8080/", "http://h:8080", "http"},
+		{"HTTP://h/base/", "HTTP://h/base", "http"},
+	}
+	for _, tt := range valid {
+		base, scheme, err := validateURL(tt.raw)
+		if err != nil {
+			t.Errorf("validateURL(%q): unexpected error: %v", tt.raw, err)
+			continue
+		}
+		if base != tt.wantBase || scheme != tt.wantScheme {
+			t.Errorf("validateURL(%q) = %q, %q, want %q, %q", tt.raw, base, scheme, tt.wantBase, tt.wantScheme)
 		}
 	}
 }
@@ -568,7 +765,9 @@ func TestForwardingSink_TrailingSlashURL_PostsToCleanPath(t *testing.T) {
 	sink := mustNewSink(t, testConfig(backend.URL+"/"))
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	waitFor(t, time.Second, received.Load)
 	if gotPath != ingest.ManifestPath {
 		t.Fatalf("path = %q, want %q (no doubled slash from the trailing slash)", gotPath, ingest.ManifestPath)
@@ -597,7 +796,9 @@ func TestForwardingSink_RetryAfterHeader_DelaysNextAttempt(t *testing.T) {
 	sink := mustNewSink(t, cfg)
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	waitFor(t, 3*time.Second, func() bool { return attempts.Load() == 2 })
 
 	// The backoff alone would retry within tens of milliseconds; the
@@ -620,7 +821,9 @@ func TestForwardingSink_DropLog_NamesTheService(t *testing.T) {
 
 	resource := &otherlodepb.ResourceAttributes{ServiceName: "demo-service", ServiceInstanceId: "instance-1", RunId: "run-1"}
 	resource.SetServiceNamespace("team-a")
-	sink.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{Resource: resource})
+	if err := sink.AcceptDeltaBatch(context.Background(), &otherlodepb.DeltaBatch{Resource: resource}); err != nil {
+		t.Fatalf("AcceptDeltaBatch: %v", err)
+	}
 	sink.Shutdown(context.Background())
 
 	got := logs.String()
@@ -721,7 +924,9 @@ func TestForwardingSink_LargeResponseBody_DoesNotBlockDelivery(t *testing.T) {
 	defer backend.Close()
 
 	sink := mustNewSink(t, testConfig(backend.URL))
-	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	waitFor(t, time.Second, received.Load)
 
 	done := make(chan struct{})
@@ -751,7 +956,7 @@ func TestForwardingSink_AcceptAfterShutdown_RefusedWithoutBlocking(t *testing.T)
 	sink.Shutdown(context.Background())
 
 	refusedBefore := metrics.ForwardRefused.Value("manifest", "shutting_down")
-	droppedBefore := metrics.ForwardDropped.Value("manifest", "shutting_down")
+	droppedBefore := droppedTotal("manifest")
 	var acceptErr error
 	done := make(chan struct{})
 	go func() {
@@ -770,8 +975,8 @@ func TestForwardingSink_AcceptAfterShutdown_RefusedWithoutBlocking(t *testing.T)
 	if got := metrics.ForwardRefused.Value("manifest", "shutting_down"); got != refusedBefore+1 {
 		t.Fatalf("refused count = %d, want %d", got, refusedBefore+1)
 	}
-	if got := metrics.ForwardDropped.Value("manifest", "shutting_down"); got != droppedBefore {
-		t.Fatalf("dropped count = %d, want unchanged at %d", got, droppedBefore)
+	if got := droppedTotal("manifest"); got != droppedBefore {
+		t.Fatalf("dropped count = %d, want unchanged at %d (a refused payload is not a drop)", got, droppedBefore)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if attempts.Load() != 0 {
@@ -804,7 +1009,9 @@ func TestForwardingSink_Shutdown_DuringRetryWait_FinalAttemptSucceeds(t *testing
 	sink := mustNewSink(t, retryWaitConfig(backend.URL))
 	deliveredBefore := metrics.ForwardDelivered.Value("manifest")
 
-	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	waitFor(t, time.Second, func() bool { return attempts.Load() == 1 })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -830,7 +1037,9 @@ func TestForwardingSink_Shutdown_DuringRetryWait_FinalAttemptAlsoFails(t *testin
 	sink := mustNewSink(t, retryWaitConfig(backend.URL))
 	droppedBefore := metrics.ForwardDropped.Value("manifest", "shutdown_attempt_failed")
 
-	sink.AcceptManifest(context.Background(), manifestWithService("svc"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("svc")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	waitFor(t, time.Second, func() bool { return attempts.Load() == 1 })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -904,13 +1113,17 @@ func TestForwardingSink_AuthTokenChanges_NextRequestSendsNewKey(t *testing.T) {
 	sink := mustNewSink(t, cfg)
 	defer sink.Shutdown(context.Background())
 
-	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("demo-service")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	if got := <-auths; got != "Bearer old-key" {
 		t.Fatalf("first authorization = %q, want %q", got, "Bearer old-key")
 	}
 
 	token.v.Store("new-key")
-	sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+	if err := sink.AcceptManifest(context.Background(), manifestWithService("demo-service")); err != nil {
+		t.Fatalf("AcceptManifest: %v", err)
+	}
 	if got := <-auths; got != "Bearer new-key" {
 		t.Fatalf("second authorization = %q, want %q", got, "Bearer new-key")
 	}
@@ -934,7 +1147,9 @@ func TestForwardingSink_EmptyAuthToken_SendsNoHeader(t *testing.T) {
 			sink := mustNewSink(t, cfg)
 			defer sink.Shutdown(context.Background())
 
-			sink.AcceptManifest(context.Background(), manifestWithService("demo-service"))
+			if err := sink.AcceptManifest(context.Background(), manifestWithService("demo-service")); err != nil {
+				t.Fatalf("AcceptManifest: %v", err)
+			}
 			if got := <-auths; len(got) != 0 {
 				t.Fatalf("authorization headers = %q, want none", got)
 			}
@@ -955,6 +1170,7 @@ func TestNewForwardingSink_PlainHTTPWithKey_Warns(t *testing.T) {
 		"http with changing key": {url: "http://backend.example.com", token: token, wantWarn: true},
 		"http without key":       {url: "http://backend.example.com", token: nil, wantWarn: false},
 		"https with key":         {url: "https://backend.example.com", token: StaticToken("backend-secret"), wantWarn: false},
+		"upper-case HTTP":        {url: "HTTP://backend.example.com", token: StaticToken("backend-secret"), wantWarn: true},
 	}
 
 	for name, tt := range tests {
@@ -974,5 +1190,174 @@ func TestNewForwardingSink_PlainHTTPWithKey_Warns(t *testing.T) {
 				t.Fatalf("log shows the key:\n%s", logs.String())
 			}
 		})
+	}
+}
+
+// blockingBackend starts a backend that holds every request until the
+// returned release function runs. entered receives one value per request.
+func blockingBackend(t *testing.T) (url string, entered chan struct{}, release func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	entered = make(chan struct{}, 16)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		<-gate
+		w.WriteHeader(http.StatusOK)
+	}))
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(backend.Close)
+	t.Cleanup(release)
+	return backend.URL, entered, release
+}
+
+func waitEntered(t *testing.T, entered chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("backend never received a request")
+	}
+}
+
+func TestForwardingSink_QueueBytes_RefusesItemOverBudgetUntilWorkerFinishes(t *testing.T) {
+	url, entered, release := blockingBackend(t)
+	item := manifestWithService("svc")
+	size := proto.Size(item)
+
+	cfg := testConfig(url)
+	cfg.QueueBytes = size + size/2
+	cfg.RequestTimeout = time.Hour
+	sink := mustNewSink(t, cfg)
+	t.Cleanup(func() {
+		release()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		sink.Shutdown(ctx)
+	})
+
+	refusedBefore := metrics.ForwardRefused.Value("manifest", "queue_full")
+	droppedBefore := droppedTotal("manifest")
+
+	if err := sink.AcceptManifest(context.Background(), item); err != nil {
+		t.Fatalf("first Accept: %v", err)
+	}
+	waitEntered(t, entered)
+
+	err := sink.AcceptManifest(context.Background(), item)
+	if !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("second Accept error = %v, want it to wrap ErrQueueFull while the first is in flight", err)
+	}
+	if got := metrics.ForwardRefused.Value("manifest", "queue_full"); got != refusedBefore+1 {
+		t.Errorf("refused count = %d, want %d", got, refusedBefore+1)
+	}
+	if got := sink.shards[0].heldBytes(); got != size {
+		t.Errorf("held bytes after a refusal = %d, want %d (the refused item must not stay counted)", got, size)
+	}
+
+	release()
+	waitFor(t, time.Second, func() bool { return sink.shards[0].heldBytes() == 0 })
+	if err := sink.AcceptManifest(context.Background(), item); err != nil {
+		t.Fatalf("Accept after the worker finished: %v", err)
+	}
+	if got := droppedTotal("manifest"); got != droppedBefore {
+		t.Errorf("dropped count = %d, want unchanged at %d", got, droppedBefore)
+	}
+}
+
+func TestForwardingSink_QueueBytes_OversizedItemPassesThroughIdleShard(t *testing.T) {
+	url, entered, release := blockingBackend(t)
+	item := manifestWithService("svc")
+
+	cfg := testConfig(url)
+	cfg.QueueBytes = 1
+	cfg.RequestTimeout = time.Hour
+	sink := mustNewSink(t, cfg)
+	t.Cleanup(func() {
+		release()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		sink.Shutdown(ctx)
+	})
+
+	if err := sink.AcceptManifest(context.Background(), item); err != nil {
+		t.Fatalf("oversized item on an idle shard: %v", err)
+	}
+	waitEntered(t, entered)
+	if err := sink.AcceptManifest(context.Background(), item); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("second oversized item error = %v, want it to wrap ErrQueueFull while the shard is busy", err)
+	}
+
+	release()
+	waitFor(t, time.Second, func() bool { return sink.shards[0].heldBytes() == 0 })
+	if err := sink.AcceptManifest(context.Background(), item); err != nil {
+		t.Fatalf("oversized item after the shard went idle: %v", err)
+	}
+}
+
+func TestForwardingSink_QueueBytes_ConcurrentEnqueuesNeverPassBudget(t *testing.T) {
+	url, entered, release := blockingBackend(t)
+	item := manifestWithService("svc")
+	size := proto.Size(item)
+
+	cfg := testConfig(url)
+	cfg.QueueSize = 64
+	cfg.QueueBytes = 3 * size
+	cfg.RequestTimeout = time.Hour
+	sink := mustNewSink(t, cfg)
+	t.Cleanup(func() {
+		release()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		sink.Shutdown(ctx)
+	})
+
+	var accepted atomic.Int32
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := sink.AcceptManifest(context.Background(), item); err == nil {
+				accepted.Add(1)
+			} else if !errors.Is(err, ErrQueueFull) {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	waitEntered(t, entered)
+
+	if got := accepted.Load(); got != 3 {
+		t.Errorf("accepted = %d, want 3 (budget holds three items)", got)
+	}
+	if got := sink.shards[0].heldBytes(); got != 3*size {
+		t.Errorf("held bytes = %d, want %d", got, 3*size)
+	}
+}
+
+func TestForwardingSink_QueueBytes_ReturnToZeroAfterShutdown(t *testing.T) {
+	url, entered, release := blockingBackend(t)
+	item := manifestWithService("svc")
+
+	cfg := testConfig(url)
+	cfg.RequestTimeout = time.Hour
+	sink := mustNewSink(t, cfg)
+	t.Cleanup(release)
+
+	for range 3 {
+		if err := sink.AcceptManifest(context.Background(), item); err != nil {
+			t.Fatalf("Accept: %v", err)
+		}
+	}
+	waitEntered(t, entered)
+
+	// The deadline ends while one item is in flight and two are queued.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	sink.Shutdown(ctx)
+
+	if got := sink.shards[0].heldBytes(); got != 0 {
+		t.Errorf("held bytes after Shutdown = %d, want 0", got)
 	}
 }

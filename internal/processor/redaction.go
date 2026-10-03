@@ -15,10 +15,10 @@ import (
 // RedactedText is the text a redacted literal part carries.
 const RedactedText = "…"
 
-// RedactionConfig configures a Redaction processor. A string literal part
-// is redacted when AllLiterals is true or any pattern in BlockedValues
-// matches some of its text. A zero RedactionConfig means the processor is
-// off.
+// RedactionConfig configures a Redaction processor. A literal part is
+// redacted when AllLiterals is true or any pattern in BlockedValues
+// matches some of its text. A part counts as a literal unless its kind is
+// CODE or PLACEHOLDER. A zero RedactionConfig means the processor is off.
 type RedactionConfig struct {
 	BlockedValues []*regexp.Regexp
 	AllLiterals   bool
@@ -32,11 +32,15 @@ func (c RedactionConfig) Enabled() bool {
 // Redaction is an ingest.Sink that hides string literals before a payload
 // leaves the collector, then passes the payload to next. See ADR 0001.
 //
-// It looks only at ConditionPart values of kind STRING_LITERAL. These sit
-// in each branch site's condition and in each outcome's case label, on
-// manifest probes and on static baseline methods. A redacted part keeps
-// its kind, and its text becomes RedactedText. Code parts, placeholder
-// parts, names and files pass through unchanged.
+// It looks at ConditionPart values. These sit in each branch site's
+// condition and in each outcome's case label, on manifest probes and on
+// static baseline methods. Only parts of kind CODE or PLACEHOLDER are
+// exempt. Any other kind counts as a literal, including
+// STRING_LITERAL, UNSPECIFIED and a kind this build does not know. The
+// proto enum is open, so an unknown kind decodes as a plain number. A
+// newer agent can add a literal kind, so a part of an unknown kind fails
+// closed. A redacted part keeps its kind, and its text becomes
+// RedactedText. Names and files pass through unchanged.
 //
 // It also drops unknown fields from every message of every payload. A
 // field the collector's bindings do not know could carry a literal that
@@ -112,7 +116,7 @@ func (r *Redaction) redactSites(sites []*otherlodepb.BranchSite) int {
 func (r *Redaction) redactParts(parts []*otherlodepb.ConditionPart) int {
 	n := 0
 	for _, p := range parts {
-		if p.GetKind() != otherlodepb.ConditionPartKind_STRING_LITERAL {
+		if k := p.GetKind(); k == otherlodepb.ConditionPartKind_CODE || k == otherlodepb.ConditionPartKind_PLACEHOLDER {
 			continue
 		}
 		if r.blocks(p.GetText()) {
@@ -123,7 +127,6 @@ func (r *Redaction) redactParts(parts []*otherlodepb.ConditionPart) int {
 	return n
 }
 
-// blocks reports whether text must be redacted.
 func (r *Redaction) blocks(text string) bool {
 	if r.cfg.AllLiterals {
 		return true

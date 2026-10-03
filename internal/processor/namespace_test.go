@@ -46,8 +46,6 @@ func sendEach(t *testing.T, ns *Namespace, newRes func() *otherlodepb.ResourceAt
 	}
 }
 
-// mismatchCounts reads the namespace mismatch counter for every payload
-// kind.
 func mismatchCounts() map[string]int64 {
 	counts := make(map[string]int64)
 	for _, payload := range []string{"deltas", "manifest", "static_baseline"} {

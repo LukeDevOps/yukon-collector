@@ -139,6 +139,136 @@ func TestLimiter_ClientIPHeader_UsesLastForwardedEntry(t *testing.T) {
 	}
 }
 
+func TestLimiter_ClientIPHeader_SeparateHeaderLinesShareProxyEntry(t *testing.T) {
+	l := New(rate.Limit(0.001), 1, WithClientIPHeader("X-Forwarded-For"))
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	// The client sends the first line. The proxy adds the second line.
+	codes := make([]int, 5)
+	for i := range codes {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		req.Header.Add("X-Forwarded-For", "198.51.100."+strconv.Itoa(i+1))
+		req.Header.Add("X-Forwarded-For", "203.0.113.5")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		codes[i] = rec.Code
+	}
+	if codes[0] != http.StatusOK {
+		t.Fatalf("first request status = %d, want %d", codes[0], http.StatusOK)
+	}
+	for i, c := range codes[1:] {
+		if c != http.StatusTooManyRequests {
+			t.Fatalf("request %d status = %d, want %d (forged first line must not pick a bucket)", i+1, c, http.StatusTooManyRequests)
+		}
+	}
+}
+
+func TestLimiter_IPv6Default_KeysPerAddress(t *testing.T) {
+	l := New(rate.Limit(0.001), 1)
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	if rec := doRequest(handler, "[2001:db8:1:2::1]:1234"); rec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec := doRequest(handler, "[2001:db8:1:2::2]:1234"); rec.Code != http.StatusOK {
+		t.Fatalf("other address in the same /64 status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec := doRequest(handler, "[2001:db8:1:2::1]:1234"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("repeat address status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestLimiter_IPv6Prefix64_SameSlash64ShareBucket(t *testing.T) {
+	l := New(rate.Limit(0.001), 1, WithIPv6Prefix(64))
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	if rec := doRequest(handler, "[2001:db8:1:2::1]:1234"); rec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec := doRequest(handler, "[2001:db8:1:2:ffff::9]:1234"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("same /64 status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestLimiter_IPv6Prefix64_DifferentSlash64SeparateBuckets(t *testing.T) {
+	l := New(rate.Limit(0.001), 1, WithIPv6Prefix(64))
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	doRequest(handler, "[2001:db8:1:2::1]:1234")
+	if rec := doRequest(handler, "[2001:db8:1:3::1]:1234"); rec.Code != http.StatusOK {
+		t.Fatalf("other /64 status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestLimiter_IPv6Prefix_OutOfRangeKeepsDefault(t *testing.T) {
+	for _, bits := range []int{0, -1, 129} {
+		l := New(rate.Limit(1), 1, WithIPv6Prefix(bits))
+		if l.ipv6Prefix != DefaultIPv6Prefix {
+			t.Errorf("bits %d: prefix = %d, want %d", bits, l.ipv6Prefix, DefaultIPv6Prefix)
+		}
+		l.Stop()
+	}
+}
+
+func TestLimiter_IPv4MappedIPv6_KeysOnIPv4(t *testing.T) {
+	l := New(rate.Limit(0.001), 1)
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	doRequest(handler, "10.0.0.1:1234")
+	if rec := doRequest(handler, "[::ffff:10.0.0.1]:1234"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("mapped address status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestLimiter_FullMap_EvictsLeastRecentlyUsedAndAllowsNewClient(t *testing.T) {
+	l := New(rate.Limit(100), 100, withMaxVisitors(2))
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	doRequest(handler, "10.0.0.1:1")
+	doRequest(handler, "10.0.0.2:1")
+
+	if rec := doRequest(handler, "10.0.0.3:1"); rec.Code != http.StatusOK {
+		t.Fatalf("new client status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if l.hasVisitor("10.0.0.1") {
+		t.Fatal("least recently used client was not evicted")
+	}
+	if !l.hasVisitor("10.0.0.2") || !l.hasVisitor("10.0.0.3") {
+		t.Fatal("a newer client was evicted")
+	}
+}
+
+func TestLimiter_FullMap_RecentlyUsedClientSurvives(t *testing.T) {
+	l := New(rate.Limit(100), 100, withMaxVisitors(2))
+	defer l.Stop()
+	handler, _ := newTestHandler(l)
+
+	doRequest(handler, "10.0.0.1:1")
+	doRequest(handler, "10.0.0.2:1")
+	doRequest(handler, "10.0.0.1:1")
+	doRequest(handler, "10.0.0.3:1")
+
+	if !l.hasVisitor("10.0.0.1") {
+		t.Fatal("recently used client was evicted")
+	}
+	if l.hasVisitor("10.0.0.2") {
+		t.Fatal("least recently used client was not evicted")
+	}
+}
+
+func TestLimiter_StopTwice_DoesNotPanic(t *testing.T) {
+	l := New(rate.Limit(1), 1)
+	l.Stop()
+	l.Stop()
+}
+
 func TestLimiter_ClientIPHeader_AbsentFallsBackToRemoteAddr(t *testing.T) {
 	l := New(rate.Limit(1), 1, WithClientIPHeader("X-Forwarded-For"))
 	defer l.Stop()

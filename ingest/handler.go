@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -70,7 +71,8 @@ var (
 )
 
 // PayloadLabel returns the metrics label for the payload type served at
-// path: "deltas", "manifest", or "static_baseline".
+// path: "deltas", "manifest", or "static_baseline". Any other path gives
+// "deltas".
 func PayloadLabel(path string) string {
 	switch path {
 	case ManifestPath:
@@ -88,21 +90,66 @@ func PayloadLabel(path string) string {
 type Handler struct {
 	sink   Sink
 	logger *slog.Logger
+
+	// slots is a counting semaphore for concurrent decodes. It is nil
+	// when decodes are not capped.
+	slots chan struct{}
+
+	// slotWait is the longest a request waits for a slot.
+	slotWait time.Duration
+}
+
+// maxSlotWait is how long a request waits for a decode slot. It is shorter
+// than the collector's 10 second write timeout, so in most cases the 503
+// reaches the client. The write deadline starts when the headers are read,
+// so a slow body upload can still use up the rest.
+const maxSlotWait = 5 * time.Second
+
+// HandlerOption configures a Handler. See NewHandler.
+type HandlerOption func(*Handler)
+
+// WithMaxConcurrentDecodes caps how many requests the Handler decodes
+// and passes to the sink at one time. A value of zero or less means no
+// cap, which is the default.
+//
+// Decoding a protobuf can take far more memory than the body: a 16 MiB
+// body of empty messages decodes to gigabytes. The decoded message also
+// stays alive until the sink returns. The cap bounds decode memory at
+// about n times the largest decode. A request reads its body before it
+// takes a slot, so bodies waiting for a slot are held as read, up to
+// 16 MiB each.
+//
+// A slow client holds no slot while it sends, and the cap counts only the
+// work that needs the memory. A request that finds no free slot waits for
+// one. If its context ends first, the Handler writes no response, since
+// the client is gone, and counts the request as rejected with reason
+// "canceled". If no slot comes free within five seconds, the Handler
+// answers 503 with "Retry-After: 1" and counts reason "busy". The wait is
+// bounded so the answer usually arrives before the server's write timeout.
+func WithMaxConcurrentDecodes(n int) HandlerOption {
+	return func(h *Handler) {
+		if n > 0 {
+			h.slots = make(chan struct{}, n)
+		}
+	}
 }
 
 // NewHandler returns a Handler that passes decoded payloads to sink and
 // logs to logger, or slog.Default() when logger is nil.
-func NewHandler(sink Sink, logger *slog.Logger) *Handler {
+func NewHandler(sink Sink, logger *slog.Logger, opts ...HandlerOption) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{sink: sink, logger: logger}
+	h := &Handler{sink: sink, logger: logger, slotWait: maxSlotWait}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
-// Register wires the handler's routes onto mux, matching the paths
-// HttpOtlpStyleExporter posts to: {endpoint}/v1/otherlode/deltas,
-// {endpoint}/v1/otherlode/manifest, and
-// {endpoint}/v1/otherlode/static-baseline.
+// Register adds POST routes for DeltaBatchPath, ManifestPath and
+// StaticBaselinePath to mux. They match the paths HttpOtlpStyleExporter
+// posts to.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+DeltaBatchPath, h.handleDeltaBatch)
 	mux.HandleFunc("POST "+ManifestPath, h.handleManifest)
@@ -110,65 +157,59 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) handleDeltaBatch(w http.ResponseWriter, r *http.Request) {
-	var batch otherlodepb.DeltaBatch
-	if !h.decode(w, r, &batch, deltaBatchKind) {
-		return
-	}
-	if err := validateDeltaBatch(&batch); err != nil {
-		h.reject(w, deltaBatchKind, err)
-		return
-	}
-	if err := h.sink.AcceptDeltaBatch(r.Context(), &batch); err != nil {
-		h.sinkFailed(w, deltaBatchKind, err)
-		return
-	}
-	metrics.IngestAccepted.Inc(deltaBatchKind.label)
-	w.WriteHeader(http.StatusAccepted)
+	handle(h, w, r, deltaBatchKind, validateDeltaBatch, h.sink.AcceptDeltaBatch)
 }
 
 func (h *Handler) handleManifest(w http.ResponseWriter, r *http.Request) {
-	var manifest otherlodepb.ProbeManifest
-	if !h.decode(w, r, &manifest, manifestKind) {
-		return
-	}
-	if err := validateManifest(&manifest); err != nil {
-		h.reject(w, manifestKind, err)
-		return
-	}
-	if err := h.sink.AcceptManifest(r.Context(), &manifest); err != nil {
-		h.sinkFailed(w, manifestKind, err)
-		return
-	}
-	metrics.IngestAccepted.Inc(manifestKind.label)
-	w.WriteHeader(http.StatusAccepted)
+	handle(h, w, r, manifestKind, validateManifest, h.sink.AcceptManifest)
 }
 
 func (h *Handler) handleStaticBaseline(w http.ResponseWriter, r *http.Request) {
-	var baseline otherlodepb.StaticBaseline
-	if !h.decode(w, r, &baseline, staticBaselineKind) {
+	handle(h, w, r, staticBaselineKind, validateStaticBaseline, h.sink.AcceptStaticBaseline)
+}
+
+// handle serves one ingest request. It reads the body, takes a decode
+// slot, decodes the body into a new T, validates it, passes it to
+// accept, and answers 202. It holds the slot until accept returns. T is
+// the pointer type of the payload message.
+func handle[T proto.Message](h *Handler, w http.ResponseWriter, r *http.Request, kind payloadKind, validate func(T) error, accept func(context.Context, T) error) {
+	body, ok := h.readRequest(w, r, kind)
+	if !ok {
 		return
 	}
-	if err := validateStaticBaseline(&baseline); err != nil {
-		h.reject(w, staticBaselineKind, err)
+	if !h.acquire(r.Context(), w, kind) {
 		return
 	}
-	if err := h.sink.AcceptStaticBaseline(r.Context(), &baseline); err != nil {
-		h.sinkFailed(w, staticBaselineKind, err)
+	defer h.release()
+	msg := newMessage[T]()
+	if !h.unmarshal(w, body, msg, kind) {
 		return
 	}
-	metrics.IngestAccepted.Inc(staticBaselineKind.label)
+	if err := validate(msg); err != nil {
+		h.reject(w, kind, err)
+		return
+	}
+	if err := accept(r.Context(), msg); err != nil {
+		h.sinkFailed(w, kind, err)
+		return
+	}
+	metrics.IngestAccepted.Inc(kind.label)
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// validateResource checks the resource every payload carries: the
-// service name, instance ID and run ID a Sink needs to attribute the
-// payload. A service name that is blank after trimming is empty. A
-// service name or namespace that is "." or ".." after trimming is
-// rejected; see isDotSegment. class_id and every cumulative total mean something only
-// within one run of one instance. The agent makes a fresh run ID per
-// process, so an instance restarted under a pinned instance ID still
-// names a different run. An empty run_id means the sender did not set
-// it.
+// newMessage returns a new, empty message of the type T points to.
+func newMessage[T proto.Message]() T {
+	var zero T
+	return zero.ProtoReflect().New().Interface().(T)
+}
+
+// validateResource checks the identity a Sink needs: a service name that
+// is not blank, an instance ID and a run ID. It rejects a service name
+// or namespace of "." or ".." (see isDotSegment). class_id and
+// cumulative totals mean something only within one run of one instance,
+// so the run ID is required. The agent makes a fresh run ID per process,
+// so a restarted instance with a pinned instance ID still names a
+// different run.
 func validateResource(res *otherlodepb.ResourceAttributes) error {
 	if res == nil {
 		return errors.New("missing resource")
@@ -257,20 +298,59 @@ func (h *Handler) sinkFailed(w http.ResponseWriter, kind payloadKind, err error)
 	w.WriteHeader(http.StatusServiceUnavailable)
 }
 
-// decode reads r's body into msg. It reports false after writing the
-// error response itself: 415 for the wrong media type, 413 for a body
-// over maxBodyBytes, 400 for anything that is not valid protobuf. kind
-// names the payload in log lines, error bodies, and metrics labels.
-func (h *Handler) decode(w http.ResponseWriter, r *http.Request, msg proto.Message, kind payloadKind) bool {
+// readRequest reads r's body. It reports false after writing the error
+// response itself: 415 for the wrong media type or a content encoding
+// other than identity, 413 for a body over maxBodyBytes, 400 for a body
+// that cannot be read. kind names the payload in metrics labels.
+func (h *Handler) readRequest(w http.ResponseWriter, r *http.Request, kind payloadKind) ([]byte, bool) {
 	if !checkContentType(w, r) {
 		metrics.IngestRejected.Inc(kind.label, "content_type")
-		return false
+		return nil, false
 	}
 	body, reason, err := readBody(w, r)
 	if err != nil {
 		metrics.IngestRejected.Inc(kind.label, reason)
+		return nil, false
+	}
+	return body, true
+}
+
+// acquire waits for a free decode slot. Without a cap it returns true at
+// once. It reports false when it took no slot. If ctx ends first, it
+// counts reason "canceled" and writes no response, since the client is
+// gone. If slotWait passes first, it counts reason "busy" and answers 503
+// with "Retry-After: 1".
+func (h *Handler) acquire(ctx context.Context, w http.ResponseWriter, kind payloadKind) bool {
+	if h.slots == nil {
+		return true
+	}
+	timer := time.NewTimer(h.slotWait)
+	defer timer.Stop()
+	select {
+	case h.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		metrics.IngestRejected.Inc(kind.label, "canceled")
+		return false
+	case <-timer.C:
+		metrics.IngestRejected.Inc(kind.label, "busy")
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return false
 	}
+}
+
+// release frees the slot that a successful acquire took.
+func (h *Handler) release() {
+	if h.slots != nil {
+		<-h.slots
+	}
+}
+
+// unmarshal decodes body into msg. It reports false after writing a 400
+// for anything that is not valid protobuf. kind names the payload in log
+// lines, error bodies, and metrics labels.
+func (h *Handler) unmarshal(w http.ResponseWriter, body []byte, msg proto.Message, kind payloadKind) bool {
 	if err := proto.Unmarshal(body, msg); err != nil {
 		h.logger.Warn("rejecting malformed "+kind.name, "error", err)
 		metrics.IngestRejected.Inc(kind.label, "malformed")
@@ -281,8 +361,18 @@ func (h *Handler) decode(w http.ResponseWriter, r *http.Request, msg proto.Messa
 }
 
 // checkContentType accepts application/x-protobuf with any parameters,
-// so a client that appends a charset is not turned away.
+// so a client that appends a charset is not turned away. It rejects a
+// Content-Encoding other than identity, since the handler does not
+// decompress and would misread the body as malformed protobuf. All
+// Content-Encoding lines are joined, and every entry must be empty or
+// identity.
 func checkContentType(w http.ResponseWriter, r *http.Request) bool {
+	for _, enc := range strings.Split(strings.Join(r.Header.Values("Content-Encoding"), ","), ",") {
+		if enc = strings.TrimSpace(enc); enc != "" && !strings.EqualFold(enc, "identity") {
+			http.Error(w, "unsupported content encoding", http.StatusUnsupportedMediaType)
+			return false
+		}
+	}
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != contentType {
 		http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
